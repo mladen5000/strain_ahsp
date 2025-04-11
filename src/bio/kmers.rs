@@ -9,8 +9,8 @@
 use crate::bio; // Access functions like reverse_complement from parent bio module
 use anyhow::Result;
 use log::warn;
-use needletail::Sequence;
 use needletail::parser::SequenceRecord; // Using needletail for sequence handling
+use needletail::Sequence;
 use std::collections::HashMap; // For k-mer counting
 
 /// Represents a k-mer. Could be stored as bytes, string, or a packed integer format.
@@ -160,7 +160,7 @@ impl KmerExtractor {
             skip_invalid: true,
         }
     }
-    
+
     /// Creates a KmerExtractor with custom settings.
     pub fn with_settings(k: usize, canonical: bool, skip_invalid: bool) -> Self {
         KmerExtractor {
@@ -169,37 +169,41 @@ impl KmerExtractor {
             skip_invalid,
         }
     }
-    
+
     /// Extract and count k-mers from a sequence.
     pub fn count_kmers(&self, seq: &[u8]) -> HashMap<Vec<u8>, u32> {
         let mut counts = HashMap::new();
-        
+
         if self.k == 0 || seq.len() < self.k {
             return counts;
         }
-        
+
         for i in 0..=(seq.len() - self.k) {
             let kmer = &seq[i..i + self.k];
-            
+
             // Skip k-mers with invalid bases if required
             if self.skip_invalid && kmer.iter().any(|&b| !bio::is_valid_base(b)) {
                 continue;
             }
-            
+
             // Get canonical form if required
             let final_kmer = if self.canonical {
                 let rc = bio::reverse_complement(kmer);
-                if kmer < &rc[..] { kmer.to_vec() } else { rc }
+                if kmer < &rc[..] {
+                    kmer.to_vec()
+                } else {
+                    rc
+                }
             } else {
                 kmer.to_vec()
             };
-            
+
             *counts.entry(final_kmer).or_insert(0) += 1;
         }
-        
+
         counts
     }
-    
+
     /// Process and count k-mers from a sequence record.
     pub fn process_record(&self, record: &SequenceRecord) -> HashMap<Vec<u8>, u32> {
         self.count_kmers(record.sequence())
@@ -209,38 +213,14 @@ impl KmerExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use needletail::parser::{FastxReader, SequenceRecord};
+    use needletail::parser::FastxReader;
     use std::io::Cursor;
-
-    // Helper to create a SequenceRecord from a string
-    fn seq_rec(id: &'static str, seq: &'static str) -> SequenceRecord<'static> {
-        // Needletail's SequenceRecord requires specific lifetime management if we
-        // don't read from a file. Creating owned data is simpler for testing.
-        // This is a bit of a hack for testing purposes.
-        let owned_id = id.as_bytes().to_vec();
-        let owned_seq = seq.as_bytes().to_vec();
-        // We need to construct the record carefully. Let's use a dummy reader.
-        let data = format!(">{}\n{}\n", id, seq);
-        let cursor = Cursor::new(data.into_bytes());
-        let mut reader = FastxReader::new(cursor);
-        reader
-            .next()
-            .unwrap()
-            .expect("Failed to parse test sequence")
-
-        // The above reader approach is better. The manual construction below is complex.
-        // SequenceRecord {
-        //     id: &owned_id, // This lifetime is tricky
-        //     seq: &owned_seq, // This lifetime is tricky
-        //     qual: None,
-        // }
-    }
 
     #[test]
     fn test_kmer_counting_simple() {
-        let seq_data = ">test\nACGTACGT";
+        let seq_data = ">test\nACGTACGT\n";
         let cursor = Cursor::new(seq_data.as_bytes());
-        let mut reader = FastxReader::new(cursor);
+        let mut reader = needletail::parse_fastx_reader(cursor).expect("Failed to create reader");
         let record = reader.next().unwrap().expect("Parse failed");
 
         let mut counts = HashMap::new();
@@ -258,12 +238,11 @@ mod tests {
     fn test_kmer_counting_with_n() {
         let seq_data = ">test\nACNGT";
         let cursor = Cursor::new(seq_data.as_bytes());
-        let mut reader = FastxReader::new(cursor);
+        let mut reader = needletail::parse_fastx_reader(cursor).expect("Failed to create reader");
         let record = reader.next().unwrap().expect("Parse failed");
 
         let mut counts = HashMap::new();
         count_canonical_kmers_in_record(&record, 3, &mut counts).unwrap();
-        // Expected 3-mers: ACN, CNG, NGT -> all skipped due to N
         assert!(counts.is_empty());
     }
 
@@ -271,7 +250,7 @@ mod tests {
     fn test_kmer_counting_empty_seq() {
         let seq_data = ">test\n";
         let cursor = Cursor::new(seq_data.as_bytes());
-        let mut reader = FastxReader::new(cursor);
+        let mut reader = needletail::parse_fastx_reader(cursor).expect("Failed to create reader");
         let record = reader.next().unwrap().expect("Parse failed");
 
         let mut counts = HashMap::new();
@@ -283,7 +262,7 @@ mod tests {
     fn test_kmer_counting_k_too_large() {
         let seq_data = ">test\nACGT";
         let cursor = Cursor::new(seq_data.as_bytes());
-        let mut reader = FastxReader::new(cursor);
+        let mut reader = needletail::parse_fastx_reader(cursor).expect("Failed to create reader");
         let record = reader.next().unwrap().expect("Parse failed");
 
         let mut counts = HashMap::new();

@@ -203,8 +203,8 @@ mod tests {
     // Helper to create a simple CountTable for testing metadata validation
     fn create_meta_test_table() -> CountTable {
         let counts = arr2(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
-        let feature_names = vec!["F1", "F2"].iter().map(|s| s.to_string()).collect();
-        let sample_names = vec!["S1", "S2", "S3"]
+        let feature_names: Vec<String> = vec!["F1", "F2"].iter().map(|s| s.to_string()).collect();
+        let sample_names: Vec<String> = vec!["S1", "S2", "S3"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -244,11 +244,20 @@ mod tests {
 
         let metadata_res = load_metadata(file_path.to_str().unwrap());
         assert!(metadata_res.is_ok());
-        
+
         let metadata = metadata_res.unwrap();
         assert_eq!(metadata.condition_map.len(), 3);
-        assert_eq!(metadata.condition_map.get("S1"), Some(&"Control".to_string()));
-        assert_eq!(metadata.condition_map.get("S2"), Some(&"Treatment".to_string()));
-        assert_eq!(metadata.condition_map.get("S3"), Some(&"Control".to_string()));
+        assert_eq!(
+            metadata.condition_map.get("S1"),
+            Some(&"Control".to_string())
+        );
+        assert_eq!(
+            metadata.condition_map.get("S2"),
+            Some(&"Treatment".to_string())
+        );
+        assert_eq!(
+            metadata.condition_map.get("S3"),
+            Some(&"Control".to_string())
+        );
     }
 }

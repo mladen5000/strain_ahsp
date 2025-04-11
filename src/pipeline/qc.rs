@@ -65,7 +65,7 @@ impl KmerSignature {
         }
 
         // Use ntHash to efficiently generate canonical k-mer hashes
-        if let Ok(iterator) = NtHashIterator::new(sequence, self.k as u8) {
+        if let Ok(iterator) = NtHashIterator::new(sequence, (self.k as u8).into()) {
             // Update bottom sketch using MinHash technique
             for hash in iterator {
                 self.total_kmers += 1;
@@ -271,7 +271,7 @@ impl MultiResolutionSignature {
     }
 
     /// Calculate information content (discriminatory power) of this signature
-    pub fn calculate_weights(&mut self, references: &[MultiResolutionSignature]) {
+    pub fn calculate_weights(&mut self, references: &[&MultiResolutionSignature]) {
         // Implementation of information-theoretic weighting
         // This is a simplified approach - full implementation would be more sophisticated
 
@@ -407,7 +407,7 @@ impl SignatureBuilder {
 
             // Normalize sequence to uppercase and filter out non-ACGT
             let seq = record.seq();
-            signature.add_sequence(seq)?;
+            signature.add_sequence(&seq)?;
         }
 
         Ok(signature)
@@ -433,7 +433,8 @@ impl SignatureBuilder {
         // Calculate weights based on discriminatory power
         for i in 0..signatures.len() {
             let (signature, others) = get_signature_and_others(&mut signatures, i);
-            signature.calculate_weights(others);
+            let others_refs: Vec<&MultiResolutionSignature> = others.iter().cloned().collect();
+            signature.calculate_weights(&others_refs);
         }
 
         Ok(signatures)

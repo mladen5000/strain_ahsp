@@ -1,3 +1,4 @@
+use nalgebra::ComplexField;
 use ndarray::{Array1, Array2};
 use rand::prelude::*;
 // Import random libraries with feature flag
@@ -84,10 +85,10 @@ impl StrainMixtureModel {
         // Initialize RNG with provided seed or random seed
         #[cfg(feature = "random")]
         let random_seed = seed.unwrap_or_else(|| rand::thread_rng().gen());
-        
+
         #[cfg(not(feature = "random"))]
         let random_seed = seed.unwrap_or(0);
-        
+
         let rng = StdRng::seed_from_u64(random_seed);
 
         Ok(Self {
@@ -139,7 +140,7 @@ impl StrainMixtureModel {
             // Propose new abundances using simple perturbation
             let mut proposal = Vec::with_capacity(self.n_strains);
             let perturbation_scale = 0.1;
-            
+
             // Generate perturbed values
             for a in &current_abundances {
                 let mut new_val = a + self.rng.gen_range(-perturbation_scale..perturbation_scale);
@@ -148,7 +149,7 @@ impl StrainMixtureModel {
                 }
                 proposal.push(new_val);
             }
-            
+
             // Normalize to sum to 1
             let sum: f64 = proposal.iter().sum();
             if sum > 0.0 {
@@ -156,7 +157,7 @@ impl StrainMixtureModel {
                     *val /= sum;
                 }
             }
-            
+
             let proposal_abundances = Array1::from_vec(proposal);
 
             // Calculate likelihood for current and proposed abundances
@@ -166,7 +167,7 @@ impl StrainMixtureModel {
 
             // Accept/reject based on likelihood ratio (simplified Metropolis-Hastings)
             let log_acceptance_ratio = proposal_likelihood - current_likelihood;
-            let random_log = (self.rng.gen_range(0.0..1.0) + 1e-10).ln(); // Add small value to avoid ln(0)
+            let random_log = (self.rng.random_range(0.0..1.0) + 1e-10).ln(); // Add small value to avoid ln(0)
             let accept = log_acceptance_ratio > 0.0 || random_log < log_acceptance_ratio;
 
             if accept {
@@ -259,13 +260,13 @@ impl StrainMixtureModel {
 pub struct StrainDeconvolution {
     /// Reference strain signatures
     pub reference_signatures: Vec<Array1<f64>>,
-    
+
     /// Reference strain IDs
     pub reference_ids: Vec<String>,
-    
+
     /// Minimum abundance threshold to report
     pub min_abundance: f64,
-    
+
     /// Maximum iterations for optimization
     pub max_iterations: usize,
 }
@@ -286,11 +287,11 @@ impl StrainDeconvolution {
                 reference_ids.len()
             ));
         }
-        
+
         if reference_signatures.is_empty() {
             return Err("No reference signatures provided".to_string());
         }
-        
+
         Ok(Self {
             reference_signatures,
             reference_ids,
@@ -298,7 +299,7 @@ impl StrainDeconvolution {
             max_iterations: max_iterations.unwrap_or(1000),
         })
     }
-    
+
     /// Estimate strain abundances in a sample using NNLS
     ///
     /// # Arguments
@@ -311,51 +312,50 @@ impl StrainDeconvolution {
     pub fn estimate_abundances(&self, sample_profile: &Array1<f64>) -> HashMap<String, f64> {
         // This is a simplified implementation using basic non-negative least squares
         // In practice, would likely use NNLS from an optimized library
-        
+
         // Build signature matrix from reference signatures
         let n_features = sample_profile.len();
         let n_strains = self.reference_signatures.len();
-        
+
         let mut signature_matrix = Array2::<f64>::zeros((n_features, n_strains));
         for (i, sig) in self.reference_signatures.iter().enumerate() {
-            if let Some(col) = signature_matrix.column_mut(i) {
-                col.assign(sig);
-            }
+            let mut col = signature_matrix.column_mut(i);
+            col.assign(sig);
         }
-        
+
         // Initialize abundance vector to equal abundances
         let mut abundances = Array1::<f64>::ones(n_strains) / n_strains as f64;
-        
+
         // Placeholder for actual optimization
         // In a real implementation, would use an NNLS solver
         for _ in 0..self.max_iterations {
             // Compute current prediction
             let prediction = signature_matrix.dot(&abundances);
-            
+
             // Compute residual
             let residual = sample_profile - &prediction;
-            
+
             // Compute gradient (simplified)
             let gradient = signature_matrix.t().dot(&residual);
-            
+
             // Update abundances with a small step in gradient direction
             let step_size = 0.01;
             abundances = &abundances + step_size * gradient;
-            
+
             // Project to non-negative values
             for a in abundances.iter_mut() {
                 if *a < 0.0 {
                     *a = 0.0;
                 }
             }
-            
+
             // Normalize to sum to 1
             let sum = abundances.sum();
             if sum > 0.0 {
                 abundances /= sum;
             }
         }
-        
+
         // Convert to HashMap, filtering by minimum abundance
         let mut result = HashMap::new();
         for (i, strain_id) in self.reference_ids.iter().enumerate() {
@@ -364,7 +364,7 @@ impl StrainDeconvolution {
                 result.insert(strain_id.clone(), abundance);
             }
         }
-        
+
         result
     }
 }

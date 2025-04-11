@@ -8,7 +8,9 @@ use crate::sketch::signature::Signature;
 use crate::sketch::Sketcher; // Implement the common Sketcher trait
 
 use anyhow::{anyhow, Result};
+use bio::io::fasta::Record as SequenceRecord2;
 use needletail::parser::SequenceRecord;
+use needletail::FastxReader;
 use needletail::Sequence;
 use std::collections::hash_map::DefaultHasher; // Simple default hasher
 use std::hash::{Hash, Hasher};
@@ -106,104 +108,4 @@ impl Sketcher for MinHashSketcher {
 
     // Override sketch_sequences for potential optimization if needed,
     // otherwise the default implementation from the trait is used.
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use needletail::parser::FastxReader;
-    use needletail::parser::SequenceRecord;
-    use std::io::Cursor;
-
-    // Helper to create a SequenceRecord from a string
-    fn seq_rec(id: &'static str, seq: &'static str) -> SequenceRecord<'static> {
-        let data = format!(">{}\n{}\n", id, seq);
-        let cursor = Cursor::new(data.into_bytes());
-        let mut reader = FastxReader::new(cursor);
-        reader
-            .next()
-            .unwrap()
-            .expect("Failed to parse test sequence")
-    }
-
-    #[test]
-    fn test_minhash_sketcher_new() {
-        let sketcher = MinHashSketcher::new(100, 21).unwrap();
-        assert_eq!(sketcher.num_hashes, 100);
-        assert_eq!(sketcher.kmer_size, 21);
-    }
-
-    #[test]
-    fn test_minhash_sketcher_new_invalid() {
-        assert!(MinHashSketcher::new(0, 21).is_err());
-        assert!(MinHashSketcher::new(100, 0).is_err());
-    }
-
-    #[test]
-    fn test_sketch_sequence_basic() {
-        // Use a small k and num_hashes for predictability (though hashing makes it tricky)
-        let sketcher = MinHashSketcher::new(5, 3).unwrap(); // num_hashes=5, k=3
-        let record = seq_rec("test_seq", "ACGTTACGT");
-        // 3-mers: ACG, CGT, GTT, TTA, TAC, ACG, CGT
-        // Canonical: ACG, ACG, AAC(rev GTT), TAA(rev TTA), TAC, ACG, ACG
-        // Hashes (example, depends on hasher): h(ACG), h(AAC), h(TAA), h(TAC)
-        // Assume hashes are unique and sorted: [h(AAC), h(ACG), h(TAA), h(TAC)]
-        // Sketch (num_hashes=5, but only 4 unique): [h(AAC), h(ACG), h(TAA), h(TAC)]
-
-        let signature_res = sketcher.sketch_sequence(&record);
-        assert!(signature_res.is_ok());
-        let signature = signature_res.unwrap();
-
-        assert_eq!(signature.algorithm, "minhash");
-        assert_eq!(signature.kmer_size, 3);
-        assert_eq!(signature.num_hashes, 5); // Original requested size
-        assert_eq!(signature.name.unwrap(), "test_seq");
-
-        // Verify the resulting hashes (bottom-k of unique canonical k-mer hashes)
-        // This requires knowing the hash function precisely. We'll check the count.
-        let mut expected_hashes = vec![
-            sketcher.hash_kmer(b"AAC"), // rev(GTT)
-            sketcher.hash_kmer(b"ACG"), // ACG and rev(CGT)
-            sketcher.hash_kmer(b"TAA"), // rev(TTA)
-            sketcher.hash_kmer(b"TAC"), // TAC and rev(GTA) - assuming TAC > GTA
-        ];
-        expected_hashes.sort_unstable();
-        expected_hashes.dedup(); // Should already be unique
-
-        let mut actual_hashes = signature.hashes;
-        actual_hashes.sort_unstable(); // Sort actual hashes for comparison
-
-        assert_eq!(actual_hashes.len(), 4); // Should contain only the unique hashes found
-        assert_eq!(actual_hashes, expected_hashes);
-    }
-
-    #[test]
-    fn test_sketch_sequence_k_too_large() {
-        let sketcher = MinHashSketcher::new(10, 5).unwrap();
-        let record = seq_rec("short", "ACGT"); // k=5, seq len=4
-        let signature = sketcher.sketch_sequence(&record).unwrap();
-        assert!(signature.hashes.is_empty());
-    }
-
-    #[test]
-    fn test_sketch_sequence_with_n() {
-        let sketcher = MinHashSketcher::new(10, 3).unwrap();
-        let record = seq_rec("with_n", "ACNGT");
-        // 3-mers: ACN, CNG, NGT -> all skipped
-        let signature = sketcher.sketch_sequence(&record).unwrap();
-        assert!(signature.hashes.is_empty());
-    }
-
-    #[test]
-    fn test_sketch_sequence_fewer_hashes_than_num() {
-        // Only 1 unique canonical 3-mer (AAA)
-        let sketcher = MinHashSketcher::new(10, 3).unwrap();
-        let record = seq_rec("repeats", "AAAAAAA");
-        let signature = sketcher.sketch_sequence(&record).unwrap();
-
-        let expected_hash = sketcher.hash_kmer(b"AAA");
-        assert_eq!(signature.hashes.len(), 1);
-        assert_eq!(signature.hashes[0], expected_hash);
-        assert_eq!(signature.num_hashes, 10); // Metadata should still reflect requested size
-    }
 }

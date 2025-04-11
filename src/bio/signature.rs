@@ -123,6 +123,7 @@ impl Signature {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use approx::assert_relative_eq;
 
     fn create_test_sig(name: &str, hashes: Vec<u64>) -> Signature {
         Signature {

@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 # Command-line argument parsing
 clap = { version = "4.5.35", features = ["derive"] }
+tempfile = "3.19.1" # For creating temporary files (if needed for intermediate processing)
 
 # Bioinformatics crates
 bio = "2.2.0"        # General bioinformatics library (might need specific features)
@@ -15,7 +16,7 @@ needletail = "0.6.3" # FASTQ/FASTA parsing
 # nthash = "0.1" # k-mer hashing (if used directly)
 
 # Data handling and numerical computing
-ndarray = "0.16.1"  # N-dimensional arrays
+ndarray = {version = "0.16.1", features = ["serde"]} # N-dimensional arrays for data manipulation
 nalgebra = "0.33.2" # Linear algebra (potentially for stats)
 sprs = "0.11.3"     # Sparse matrices (if count tables are sparse)
 csv = "1.3.1"       # Reading/writing CSV files
@@ -47,6 +48,7 @@ itertools = "0.14.0" # Iterator adaptors
 flate2 = "1.1.1"
 bzip2 = "0.5.2"
 zstd = "0.13.3"
+nthash = "0.5.1" # k-mer hashing (if used directly)
 
 # Other potential dependencies based on file names
 # sled = "0.34" # Embedded database (if midas_db uses it)
@@ -56,3 +58,4 @@ zstd = "0.13.3"
 
 [dev-dependencies]
 # Add testing dependencies here
+approx = "0.5"

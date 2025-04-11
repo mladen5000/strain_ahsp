@@ -15,7 +15,7 @@ pub use signature::MultiResolutionSignature;
 // pub use minhash::MinHashSketcher;
 // pub use adaptive::AdaptiveSketcher;
 
-use crate::sketch::signature::Signature; // Use our own Signature structure 
+use crate::sketch::signature::Signature; // Use our own Signature structure
 use anyhow::{anyhow, Result};
 use needletail::parse_fastx_file;
 use needletail::parser::SequenceRecord;

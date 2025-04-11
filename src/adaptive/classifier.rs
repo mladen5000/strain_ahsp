@@ -151,7 +151,7 @@ impl AdaptiveClassifier {
         &self,
         query: &MultiResolutionSignature,
     ) -> Result<Classification, ClassificationError> {
-        // Check if we have enough coverage 
+        // Check if we have enough coverage
         // (We'll just assume a fixed value for now since total_kmers isn't available on Signature)
         let total_coverage = 1000; // Placeholder value
         if total_coverage < self.min_coverage {
@@ -264,7 +264,9 @@ impl AdaptiveClassifier {
             let meso_sim = query
                 .meso_signature
                 .jaccard_similarity(&reference.meso_signature);
-            let micro_sim = query.micro_signature.jaccard_similarity(&reference.micro_signature);
+            let micro_sim = query
+                .micro_signature
+                .jaccard_similarity(&reference.micro_signature);
 
             // Calculate overall weighted similarity
             let weighted_sim = query.similarity(reference, None);

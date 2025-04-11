@@ -7,9 +7,10 @@
 
 use crate::sketch::signature::Signature;
 use crate::sketch::Sketcher; // Implement the common Sketcher trait
-use needletail::Sequence;
 use anyhow::Result;
+use needletail::parser::FastaReader; // Add this import at the top with other imports
 use needletail::parser::SequenceRecord;
+use needletail::Sequence;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -101,19 +102,30 @@ impl Sketcher for AdaptiveSketcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use needletail::parser::FastxReader;
-    use needletail::parser::SequenceRecord;
+    use needletail::{parse_fastx_file, parser::SequenceRecord};
     use std::io::Cursor;
+    use std::io::{Seek, Write}; // For writing to tempfile in tests
 
     // Helper to create a SequenceRecord from a string
-    fn seq_rec(id: &'static str, seq: &'static str) -> SequenceRecord<'static> {
-        let data = format!(">{}\n{}\n", id, seq);
-        let cursor = Cursor::new(data.into_bytes());
-        let mut reader = FastxReader::new(cursor);
-        reader
-            .next()
-            .unwrap()
-            .expect("Failed to parse test sequence")
+    fn seq_rec(id: &str, seq: &str) -> SequenceRecord<'static> {
+        // Create a temporary file in memory to avoid filesystem dependencies
+        let fasta_data = format!(">{}\n{}\n", id, seq);
+        let cursor = std::io::Cursor::new(fasta_data.into_bytes());
+
+        // Instead of trying to construct the SequenceRecord manually,
+        // we'll use the proper parser but with a memory leak to ensure static lifetime
+        let boxed_reader = Box::new(needletail::parse_fastx_reader(cursor).unwrap());
+
+        // Convert the boxed reader to a leaked pointer with 'static lifetime
+        // This is unsafe and causes a memory leak, but necessary for the 'static requirement
+        let static_reader = Box::leak(boxed_reader);
+
+        // Get the first record from the reader
+        match static_reader.next() {
+            Some(Ok(record)) => record,
+            Some(Err(e)) => panic!("Failed to parse test sequence: {}", e),
+            None => panic!("No sequence found in test data"),
+        }
     }
 
     #[test]
@@ -212,7 +224,7 @@ impl AdaptiveClassifier {
             min_similarity,
         }
     }
-    
+
     /// Creates a new classifier with empty references.
     pub fn empty(scaling_factor: u64, min_similarity: f64) -> Self {
         AdaptiveClassifier {
@@ -221,48 +233,48 @@ impl AdaptiveClassifier {
             min_similarity,
         }
     }
-    
+
     /// Adds a reference signature to the classifier.
     pub fn add_reference(&mut self, id: String, signature: Signature) {
         self.reference_sketches.insert(id, signature);
     }
-    
+
     /// Classifies a query signature against the reference database.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `query_signature` - The signature to classify
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A Vec of (reference ID, similarity score) pairs, sorted by descending similarity
     pub fn classify(&self, query_signature: &Signature) -> Vec<(String, f64)> {
         let mut results = Vec::new();
-        
+
         for (ref_id, ref_sig) in &self.reference_sketches {
             let similarity = query_signature.jaccard_similarity(ref_sig);
-            
+
             if similarity >= self.min_similarity {
                 results.push((ref_id.clone(), similarity));
             }
         }
-        
+
         // Sort by similarity (descending)
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        
+
         results
     }
-    
+
     /// Returns the number of reference sketches in the classifier.
     pub fn reference_count(&self) -> usize {
         self.reference_sketches.len()
     }
-    
+
     /// Returns the scaling factor used for the sketches.
     pub fn scaling_factor(&self) -> u64 {
         self.scaling_factor
     }
-    
+
     /// Returns the minimum similarity threshold.
     pub fn min_similarity(&self) -> f64 {
         self.min_similarity

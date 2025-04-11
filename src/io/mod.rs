@@ -135,11 +135,11 @@ mod tests {
     // Helper to create a simple CountTable for testing
     fn create_test_count_table() -> CountTable {
         let counts = arr2(&[[10.0, 20.0], [5.0, 0.0]]);
-        let feature_names = vec!["GeneA", "GeneB"]
+        let feature_names: Vec<String> = vec!["GeneA", "GeneB"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let sample_names = vec!["Sample1", "Sample2"]
+        let sample_names: Vec<String> = vec!["Sample1", "Sample2"]
             .iter()
             .map(|s| s.to_string())
             .collect();
