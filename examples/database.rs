@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::path::Path;
+use strain_ahsp::database::DatabaseManager;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize database manager

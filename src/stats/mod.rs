@@ -96,8 +96,12 @@ fn load_metadata(path: &str) -> Result<SampleMetadata> {
 fn validate_metadata(table: &CountTable, metadata: &SampleMetadata) -> Result<()> {
     let table_samples: std::collections::HashSet<_> =
         table.sample_names().iter().cloned().collect();
-    let metadata_samples: std::collections::HashSet<_> =
-        metadata.condition_map.keys().cloned().collect();
+    let metadata_samples: std::collections::HashSet<_> = metadata
+        .sample_info
+        .iter() // Change from get(k) to iter() to access all samples
+        .flat_map(|(_, info)| info.condition_map.keys())
+        .cloned()
+        .collect();
 
     let table_only: Vec<_> = table_samples.difference(&metadata_samples).collect();
     let metadata_only: Vec<_> = metadata_samples.difference(&table_samples).collect();

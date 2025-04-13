@@ -1,5 +1,5 @@
-use metagenomics_deseq2::sketch::{AdaptiveClassifier, MultiResolutionSignature, SignatureBuilder};
-use metagenomics_deseq2::stats::bayesian::StrainMixtureModel;
+use crate::sketch::minhash::{AdaptiveClassifier, MultiResolutionSignature, SignatureBuilder};
+use crate::strain_ahsp::bio::stats::bayesian::StrainMixtureModel;
 use std::error::Error;
 use std::path::Path;
 

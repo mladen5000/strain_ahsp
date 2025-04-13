@@ -2,20 +2,21 @@
 //!
 //! This module provides implementations for different types of genomic signatures.
 
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Represents a sketch/signature of a sequence, typically a collection of hash values.
 /// For example, a MinHash signature would be a set of smallest hash values.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Decode, Encode)]
 pub struct Signature {
-    pub algorithm: String,       // Algorithm used to generate the signature (e.g., "minhash")
-    pub kmer_size: usize,        // K-mer size used
-    pub num_hashes: usize,       // Number of hashes requested (actual might be less)
-    pub name: Option<String>,    // Optional name for the signature (e.g., sequence ID)
+    pub algorithm: String, // Algorithm used to generate the signature (e.g., "minhash")
+    pub kmer_size: usize,  // K-mer size used
+    pub num_hashes: usize, // Number of hashes requested (actual might be less)
+    pub name: Option<String>, // Optional name for the signature (e.g., sequence ID)
     pub filename: Option<String>, // Filename source, if sketched from a file
-    pub path: Option<PathBuf>,   // File path, if sketched from a file
-    pub hashes: Vec<u64>,        // The actual hash values comprising the signature
+    pub path: Option<PathBuf>, // File path, if sketched from a file
+    pub hashes: Vec<u64>,  // The actual hash values comprising the signature
 }
 
 impl Signature {
@@ -96,22 +97,36 @@ impl Signature {
     }
 }
 
+impl Default for Signature {
+    fn default() -> Self {
+        Self {
+            algorithm: "empty".to_string(),
+            kmer_size: 0,
+            num_hashes: 0,
+            name: None,
+            filename: None,
+            path: None,
+            hashes: Vec::new(),
+        }
+    }
+}
+
 /// Resolution level for hierarchical sketches.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolutionLevel {
-    Macro,  // Coarse resolution
-    Meso,   // Medium resolution
-    Micro,  // Fine resolution
+    Macro,      // Coarse resolution
+    Meso,       // Medium resolution
+    Micro,      // Fine resolution
     Custom(u8), // Custom resolution with kmer size
 }
 
 /// A multi-resolution genomic signature.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, Default)]
 pub struct MultiResolutionSignature {
     pub taxon_id: String,
     pub lineage: Vec<String>,
     pub levels: Vec<Signature>,
-    
+
     // These are added for compatibility with existing code
     #[serde(skip)]
     pub macro_signature: Signature,
@@ -124,37 +139,52 @@ pub struct MultiResolutionSignature {
 impl MultiResolutionSignature {
     /// Create a new multi-resolution signature
     pub fn new(taxon_id: String, lineage: Vec<String>) -> Self {
-        let empty_sig = Signature::new("empty".to_string(), 0, 0);
         MultiResolutionSignature {
             taxon_id,
             lineage,
             levels: Vec::new(),
-            macro_signature: empty_sig.clone(),
-            meso_signature: empty_sig.clone(),
-            micro_signature: empty_sig,
+            macro_signature: Signature::default(),
+            meso_signature: Signature::default(),
+            micro_signature: Signature::default(),
         }
     }
-    
+
     /// Calculate similarity between this signature and another
     pub fn similarity(&self, other: &Self, weights: Option<Vec<f64>>) -> f64 {
         let default_weights = vec![0.2, 0.3, 0.5]; // Example weights for macro, meso, micro
         let weights = weights.unwrap_or(default_weights);
-        
+
         // Example weighted combination of similarities
-        let macro_sim = self.macro_signature.jaccard_similarity(&other.macro_signature);
-        let meso_sim = self.meso_signature.jaccard_similarity(&other.meso_signature);
-        let micro_sim = self.micro_signature.jaccard_similarity(&other.micro_signature);
-        
+        let macro_sim = self
+            .macro_signature
+            .jaccard_similarity(&other.macro_signature);
+        let meso_sim = self
+            .meso_signature
+            .jaccard_similarity(&other.meso_signature);
+        let micro_sim = self
+            .micro_signature
+            .jaccard_similarity(&other.micro_signature);
+
         weights[0] * macro_sim + weights[1] * meso_sim + weights[2] * micro_sim
     }
 }
 
 /// Represents a k-mer signature, used for sequences.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Decode, Encode)]
 pub struct KmerSignature {
     pub kmers: Vec<Vec<u8>>,
     pub counts: Vec<u32>,
     pub total_kmers: u64,
+    pub(crate) sketch_size: usize,
+    pub sketch: Vec<u64>,
+}
+
+impl KmerSignature {
+    pub fn is_initialized(&self) -> bool {
+        // Check relevant fields that indicate proper initialization
+        // For example, check if sketch size > 0 or if there's data in the signature
+        !self.sketch.is_empty() // Assuming there's a sketch field
+    }
 }
 
 /// Builder for creating signature objects.

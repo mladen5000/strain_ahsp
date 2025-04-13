@@ -1,23 +1,20 @@
+use crate::adaptive::classifier::{AdaptiveClassifier, Classification, TaxonomicLevel};
+use crate::database::DatabaseManager;
+// Correct signature imports (assuming these are the canonical types)
+use crate::sketch::signature::{KmerSignature, MultiResolutionSignature}; // Add VariantProfile if needed by MultiResSig
+use log::{debug, error, info, warn}; // Include debug
+use needletail::parse_fastx_file; // Correct import
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::fs::{self, File}; // Use fs for create_dir_all
+use std::io::{self, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-
-use log::{error, info, warn};
-use needletail::{parse_fastx_file, Sequence};
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::adaptive::classifier::{AdaptiveClassifier, Classification, TaxonomicLevel};
-use crate::bio::signature::{
-    KmerSignature, MultiResolutionSignature, ResolutionLevel, VariantProfile,
-};
-use crate::database::{DatabaseManager, SignatureDatabase};
-use crate::stats::bayesian::StrainMixtureModel;
-
+// --- Error Type ---
 #[derive(Error, Debug)]
 pub enum ProcessingError {
     #[error("IO error: {0}")]
@@ -26,6 +23,7 @@ pub enum ProcessingError {
     #[error("FASTQ parsing error: {0}")]
     FastqError(String),
 
+    // Assuming SignatureError might come from sketch module or local operations
     #[error("Signature error: {0}")]
     SignatureError(String),
 
@@ -37,21 +35,36 @@ pub enum ProcessingError {
 
     #[error("Database error: {0}")]
     DatabaseError(String),
+
+    #[error("Needletail parsing error: {0}")]
+    NeedletailError(#[from] needletail::errors::ParseError),
+
+    #[error("Classifier not initialized")] // Added specific error
+    ClassifierUninitialized,
+
+    #[error("Failed to lock mutex: {0}")] // Added specific error
+    MutexLockError(String),
+
+    #[error("No valid reference signatures could be loaded or converted")] // Added specific error
+    NoValidReferences,
 }
+
+// Custom conversion from Mutex PoisonError
+impl<T> From<std::sync::PoisonError<T>> for ProcessingError {
+    fn from(err: std::sync::PoisonError<T>) -> Self {
+        ProcessingError::MutexLockError(err.to_string())
+    }
+}
+
+// --- Structs (QC Params, Metrics, Results) ---
+// (Keeping definitions as provided)
 
 /// Quality control parameters for FASTQ processing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityControlParams {
-    /// Minimum average quality score
     pub min_avg_quality: f64,
-
-    /// Minimum read length after trimming
     pub min_length: usize,
-
-    /// Quality score threshold for trimming
     pub trim_quality: u8,
-
-    /// Maximum percentage of N bases allowed
     pub max_n_percent: f64,
 }
 
@@ -67,75 +80,43 @@ impl Default for QualityControlParams {
 }
 
 /// Processing metrics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)] // Added Default
 pub struct ProcessingMetrics {
-    /// Total number of reads processed
     pub total_reads: usize,
-
-    /// Number of reads passing QC
     pub passed_reads: usize,
-
-    /// Total bases processed
     pub total_bases: usize,
-
-    /// Number of bases passing QC
     pub passed_bases: usize,
-
-    /// Average read length
     pub avg_read_length: f64,
-
-    /// Processing time in seconds
     pub processing_time_seconds: f64,
 }
 
 /// Sample classification results
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassificationResults {
-    /// Sample ID
     pub sample_id: String,
-
-    /// Processing metrics
     pub metrics: ProcessingMetrics,
-
-    /// Top taxonomic classifications
-    pub classifications: Vec<Classification>,
-
-    /// Strain abundance estimates
-    pub strain_abundances: HashMap<String, (f64, f64)>, // strain_id -> (abundance, confidence)
-
-    /// Path to results file
+    pub classifications: Vec<Classification>, // Store top classification(s)
+    pub strain_abundances: HashMap<String, (f64, f64)>,
     pub results_file: Option<PathBuf>,
 }
 
+// --- FastqProcessor ---
+
 /// FASTQ processing pipeline
 pub struct FastqProcessor {
-    /// Quality control parameters
-    pub qc_params: QualityControlParams,
-
-    /// Number of threads to use
-    pub threads: usize,
-
-    /// Chunk size for parallel processing
-    pub chunk_size: usize,
-
-    /// K-mer size for macro-level signatures
-    pub macro_k: usize,
-
-    /// K-mer size for meso-level signatures
-    pub meso_k: usize,
-
-    /// Sketch size for signatures
-    pub sketch_size: usize,
-
-    /// Database manager
-    pub db_manager: DatabaseManager,
-
-    /// Classifier
-    pub classifier: Option<AdaptiveClassifier>,
+    qc_params: QualityControlParams,
+    threads: usize,
+    chunk_size: usize,
+    macro_k: usize,
+    meso_k: usize,
+    sketch_size: usize,
+    db_manager: DatabaseManager,
+    // Store the classifier directly, potentially wrapped in Arc if needed elsewhere
+    classifier: Option<AdaptiveClassifier>,
 }
 
 impl FastqProcessor {
-    /// Create a new FASTQ processor
+    /// Create a new FASTQ processor instance.
     pub fn new(
         db_path: impl AsRef<Path>,
         cache_dir: impl AsRef<Path>,
@@ -146,49 +127,129 @@ impl FastqProcessor {
         qc_params: Option<QualityControlParams>,
         api_key: Option<String>,
     ) -> Result<Self, ProcessingError> {
-        // Create database manager
+        info!("Initializing FastqProcessor...");
+        // Basic validation
+        if macro_k < 3 || meso_k < 3 || sketch_size == 0 {
+            return Err(ProcessingError::SignatureError(format!(
+                 "Invalid parameters: macro_k={}, meso_k={}, sketch_size={}. K must be >= 3, sketch > 0.",
+                 macro_k, meso_k, sketch_size
+            )));
+        }
+
         let db_manager = DatabaseManager::new(
-            db_path,
-            cache_dir,
-            macro_k,
-            meso_k,
+            db_path.as_ref(), // Use as_ref()
+            cache_dir.as_ref(),
             sketch_size,
             threads,
             api_key,
         )
-        .map_err(|e| ProcessingError::DatabaseError(format!("{}", e)))?;
+        .map_err(|e| ProcessingError::DatabaseError(format!("DB Manager init failed: {}", e)))?;
+        info!("DatabaseManager initialized.");
 
         Ok(FastqProcessor {
             qc_params: qc_params.unwrap_or_default(),
-            threads,
-            chunk_size: 100000, // Process 100k reads at a time
+            threads: threads.max(1), // Ensure at least one thread
+            chunk_size: 100_000,     // Default chunk size
             macro_k,
             meso_k,
             sketch_size,
             db_manager,
-            classifier: None, // Will be initialized later
+            classifier: None, // Initialize classifier separately
         })
     }
 
-    /// Initialize the classifier
+    /// Initialize the classifier by loading and preparing reference signatures.
+    /// Must be called after `new` and before `process_file`.
     pub fn init_classifier(&mut self) -> Result<(), ProcessingError> {
-        // Get all reference signatures
-        let references = self
-            .db_manager
-            .database
-            .get_all_signatures()
-            .map_err(|e| ProcessingError::DatabaseError(format!("{}", e)))?;
+        if self.classifier.is_some() {
+            info!("Classifier already initialized.");
+            return Ok(());
+        }
+        info!("Initializing classifier: Fetching reference signatures...");
 
-        // Create adaptive classifier
-        let classifier = AdaptiveClassifier::new(references, None, None)
-            .map_err(|e| ProcessingError::ClassificationError(format!("{}", e)))?;
+        // Assume get_all_signatures returns Vec<Arc<SomeDbType>>
+        // **CRITICAL:** The structure of `db_sig_arc` MUST match expectations below.
+        let db_references = self.db_manager.database.get_all_signatures().map_err(|e| {
+            ProcessingError::DatabaseError(format!("Failed to get signatures: {}", e))
+        })?;
+
+        if db_references.is_empty() {
+            return Err(ProcessingError::NoValidReferences);
+        }
+        info!(
+            "Loaded {} reference signatures from DB.",
+            db_references.len()
+        );
+
+        // Convert DB signatures to the sketch::signature::MultiResolutionSignature type
+        let mut sketch_signatures = Vec::with_capacity(db_references.len());
+        let mut skipped_count = 0;
+        for db_sig_arc in db_references {
+            // --- Conversion Logic ---
+            // This is the most fragile part. Assumes `db_sig_arc` has the necessary fields.
+            // Ensure `KmerSignature` and `Option<VariantProfile>` types match.
+            if let (Some(macro_sig), Some(meso_sig)) = (
+                db_sig_arc.macro_signature.as_ref(), // Borrow instead of cloning immediately
+                db_sig_arc.meso_signature.as_ref(),
+            ) {
+                // Construct the required signature type
+                let sketch_sig = MultiResolutionSignature {
+                    taxon_id: db_sig_arc.taxon_id.clone(),
+                    lineage: db_sig_arc.lineage.clone(),
+                    macro_signature: macro_sig.clone(), // Now clone
+                    meso_signature: meso_sig.clone(),   // Now clone
+                    // Clone micro if present, otherwise None
+                    micro_signature: db_sig_arc.micro_signature.clone(),
+                    // Initialize weights or other fields as needed by the struct definition
+                    // Assuming 'weights' is not a field based on previous errors,
+                    // If a field like 'levels' exists, initialize it appropriately e.g., levels: vec![]
+                    weights: HashMap::new(), // Or remove if field doesn't exist
+                    levels: vec![],          // Use if 'levels' is the field
+                };
+                sketch_signatures.push(Arc::new(sketch_sig));
+            } else {
+                warn!(
+                    "Skipping reference signature '{}' due to missing macro or meso signature.",
+                    db_sig_arc.taxon_id
+                );
+                skipped_count += 1;
+            }
+            // --- End Conversion Logic ---
+        }
+
+        if sketch_signatures.is_empty() {
+            error!(
+                "Failed to convert any DB signatures. {} signatures were skipped.",
+                skipped_count
+            );
+            return Err(ProcessingError::NoValidReferences);
+        }
+        info!(
+            "Successfully converted {} signatures ({} skipped). Creating classifier...",
+            sketch_signatures.len(),
+            skipped_count
+        );
+
+        // Create the classifier instance
+        let classifier = AdaptiveClassifier::new(sketch_signatures, None, None) // Pass Vec<Arc<MultiResolutionSignature>>
+            .map_err(|e| {
+                ProcessingError::ClassificationError(format!("Classifier creation failed: {}", e))
+            })?;
+        info!("Classifier initialized successfully.");
 
         self.classifier = Some(classifier);
-
         Ok(())
     }
 
-    /// Process a FASTQ file
+    /// Get a reference to the initialized classifier.
+    /// Returns an error if the classifier has not been initialized.
+    fn get_classifier(&self) -> Result<&AdaptiveClassifier, ProcessingError> {
+        self.classifier
+            .as_ref()
+            .ok_or(ProcessingError::ClassifierUninitialized)
+    }
+
+    /// Process a single FASTQ file.
     pub fn process_file(
         &self,
         fastq_path: impl AsRef<Path>,
@@ -196,321 +257,473 @@ impl FastqProcessor {
         output_dir: impl AsRef<Path>,
     ) -> Result<ClassificationResults, ProcessingError> {
         let start_time = Instant::now();
+        info!(
+            "Starting processing for sample '{}' from file: {}",
+            sample_id,
+            fastq_path.as_ref().display()
+        );
 
-        // Check if classifier is initialized
-        let classifier = match &self.classifier {
-            Some(c) => c,
-            None => {
-                return Err(ProcessingError::ClassificationError(
-                    "Classifier not initialized. Call init_classifier() first.".to_string(),
-                ))
-            }
-        };
+        let classifier = self.get_classifier()?; // Ensure classifier is ready
 
-        // Create output directory if it doesn't exist
+        // Prepare output directory
         let output_path = output_dir.as_ref();
-        if !output_path.exists() {
-            std::fs::create_dir_all(output_path)?;
-        }
+        fs::create_dir_all(output_path)?;
+        info!("Output directory set to: {}", output_path.display());
 
-        // Initialize metrics
-        let metrics = Arc::new(Mutex::new(ProcessingMetrics {
-            total_reads: 0,
-            passed_reads: 0,
-            total_bases: 0,
-            passed_bases: 0,
-            avg_read_length: 0.0,
-            processing_time_seconds: 0.0,
-        }));
+        // Initialize metrics and signature in Arcs for thread safety
+        let metrics = Arc::new(Mutex::new(ProcessingMetrics::default()));
+        let sample_signature = self.create_empty_sample_signature(sample_id)?;
 
-        // Initialize signature
-        let signature = Arc::new(Mutex::new(
-            MultiResolutionSignature::new(
-                sample_id,
-                Vec::new(),
-                self.macro_k,
-                self.meso_k,
-                self.sketch_size,
-                self.sketch_size,
-            )
-            .map_err(|e| ProcessingError::SignatureError(format!("{}", e)))?,
-        ));
+        // Read and process the file in chunks
+        self.read_and_process_reads(fastq_path.as_ref(), &metrics, &sample_signature)?;
 
-        // Create a reader for the FASTQ file
-        let mut reader = parse_fastx_file(fastq_path.as_ref())
-            .map_err(|e| ProcessingError::FastqError(format!("{}", e)))?;
+        let elapsed_read_time = start_time.elapsed();
+        info!(
+            "Read processing completed in {:.2} seconds.",
+            elapsed_read_time.as_secs_f64()
+        );
 
-        // Read and process chunks of reads in parallel
-        let mut current_chunk = Vec::new();
+        // Finalize metrics
+        let final_metrics = self.finalize_metrics(metrics, elapsed_read_time.as_secs_f64())?;
 
-        info!("Processing file: {}", fastq_path.as_ref().display());
+        // Get the final signature
+        let final_signature = Arc::try_unwrap(sample_signature) // Try to get ownership
+            .map_err(|_| ProcessingError::MutexLockError("Failed to unwrap Arc".to_string()))?
+            .into_inner()?; // Get ownership from Mutex
 
-        while let Some(record) = reader.next() {
-            let record = record.map_err(|e| ProcessingError::FastqError(format!("{}", e)))?;
+        // Classify the signature
+        info!("Classifying final sample signature...");
+        // Assuming classify returns the single best result
+        let classification = classifier.classify(&final_signature)?;
+        let classifications = vec![classification]; // Wrap in Vec for consistency
 
-            current_chunk.push((record.seq().to_vec(), record.qual().map(|q| q.to_vec())));
+        // Estimate strain abundances
+        let strain_abundances = self.run_strain_estimation(&final_signature, &classifications)?;
 
-            // Process chunk when it reaches the specified size
-            if current_chunk.len() >= self.chunk_size {
-                self.process_chunk(&current_chunk, &metrics, &signature)?;
-                current_chunk.clear();
-            }
-        }
-
-        // Process any remaining reads
-        if !current_chunk.is_empty() {
-            self.process_chunk(&current_chunk, &metrics, &signature)?;
-        }
-
-        // Calculate processing time
-        let elapsed = start_time.elapsed().as_secs_f64();
-
-        // Update metrics
-        let mut metrics = metrics.lock().unwrap();
-        metrics.processing_time_seconds = elapsed;
-
-        if metrics.passed_reads > 0 {
-            metrics.avg_read_length = metrics.passed_bases as f64 / metrics.passed_reads as f64;
-        }
-
-        // Get the signature
-        let signature = signature.lock().unwrap().clone();
-
-        // Classify the sample
-        let classification = classifier
-            .classify(&signature)
-            .map_err(|e| ProcessingError::ClassificationError(format!("{}", e)))?;
-
-        // Get top-level classifications at different taxonomic levels
-        let classifications = self.get_hierarchical_classifications(&signature, classifier)?;
-
-        // Estimate strain abundances if we have species-level classification
-        let strain_abundances = if classification.level <= TaxonomicLevel::Species {
-            self.estimate_strain_abundances(&signature, classifier)?
-        } else {
-            HashMap::new()
-        };
-
-        // Write results to file
-        let results_file = output_path.join(format!("{}_results.json", sample_id));
-        let results = ClassificationResults {
-            sample_id: sample_id.to_string(),
-            metrics: metrics.clone(),
+        // Assemble and save results
+        let results = self.assemble_and_save_results(
+            sample_id,
+            final_metrics,
             classifications,
             strain_abundances,
-            results_file: Some(results_file.clone()),
-        };
+            output_path,
+        )?;
 
-        // Serialize and write results
-        let file = File::create(&results_file)?;
-        let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &results)
-            .map_err(|e| ProcessingError::IoError(io::Error::new(io::ErrorKind::Other, e)))?;
-
-        info!("Processed sample {} in {:.2} seconds", sample_id, elapsed);
+        let total_time = start_time.elapsed().as_secs_f64();
         info!(
-            "Reads: {}/{} passed QC ({:.1}%)",
-            metrics.passed_reads,
-            metrics.total_reads,
-            100.0 * metrics.passed_reads as f64 / metrics.total_reads.max(1) as f64
+            "Total processing for sample '{}' finished in {:.2} seconds.",
+            sample_id, total_time
         );
+        self.log_summary_metrics(&results.metrics);
 
         Ok(results)
     }
 
-    /// Process a chunk of reads in parallel
+    /// Creates an empty MultiResolutionSignature for a new sample.
+    fn create_empty_sample_signature(
+        &self,
+        sample_id: &str,
+    ) -> Result<Arc<Mutex<MultiResolutionSignature>>, ProcessingError> {
+        // Initialize KmerSignatures using struct literals if ::new is unavailable
+        let macro_sig = KmerSignature {
+            kmers: Vec::with_capacity(self.sketch_size),
+            counts: Vec::with_capacity(self.sketch_size),
+            total_kmers: 0,
+        };
+        let meso_sig = KmerSignature {
+            kmers: Vec::with_capacity(self.sketch_size),
+            counts: Vec::with_capacity(self.sketch_size),
+            total_kmers: 0,
+        };
+
+        // Create the MultiResolutionSignature using struct literal
+        let signature = MultiResolutionSignature {
+            taxon_id: sample_id.to_string(),
+            lineage: Vec::new(), // Sample lineage is unknown initially
+            macro_signature: macro_sig,
+            meso_signature: meso_sig,
+            micro_signature: None, // Initialize as None
+            weights: HashMap::new(), // Or remove if field doesn't exist
+                                   // levels: vec![], // Use if 'levels' is the field
+        };
+
+        Ok(Arc::new(Mutex::new(signature)))
+    }
+
+    /// Reads FASTQ records and processes them in parallel chunks.
+    fn read_and_process_reads(
+        &self,
+        fastq_path: &Path,
+        metrics: &Arc<Mutex<ProcessingMetrics>>,
+        signature: &Arc<Mutex<MultiResolutionSignature>>,
+    ) -> Result<(), ProcessingError> {
+        let mut reader = parse_fastx_file(fastq_path)?;
+        let mut current_chunk = Vec::with_capacity(self.chunk_size);
+
+        while let Some(record_result) = reader.next() {
+            let record = record_result?;
+            current_chunk.push((record.seq().to_vec(), record.qual().map(|q| q.to_vec())));
+
+            if current_chunk.len() >= self.chunk_size {
+                self.process_chunk(t_chunk, metrics, signature)?;
+                current_chunk.clear();
+            }
+        }
+
+        if !current_chunk.is_empty() {
+            self.process_chunk(t_chunk, metrics, signature)?;
+        }
+        Ok(())
+    }
+
+    /// Process a chunk of reads in parallel: apply QC and update the shared signature.
     fn process_chunk(
         &self,
         chunk: &[(Vec<u8>, Option<Vec<u8>>)],
         metrics: &Arc<Mutex<ProcessingMetrics>>,
         signature: &Arc<Mutex<MultiResolutionSignature>>,
     ) -> Result<(), ProcessingError> {
-        // Process reads in parallel
-        let results: Vec<Option<Vec<u8>>> = chunk
+        // Use Rayon's parallel bridge for iterators combined with try_for_each for error handling
+        chunk
             .par_iter()
-            .map(|(seq, qual)| {
-                // Apply quality control
-                if let Some(processed) = self.apply_quality_control(seq, qual.as_ref()) {
-                    // Update metrics
-                    let mut metrics_guard = metrics.lock().unwrap();
-                    metrics_guard.total_reads += 1;
-                    metrics_guard.total_bases += seq.len();
-                    metrics_guard.passed_reads += 1;
-                    metrics_guard.passed_bases += processed.len();
+            .try_for_each(|(seq, qual)| -> Result<(), ProcessingError> {
+                // Ensure closure returns Result
+                let original_len = seq.len();
+                let processed_seq_opt = self.apply_quality_control(seq, qual.as_ref());
 
-                    Some(processed)
-                } else {
-                    // Read failed QC
-                    let mut metrics_guard = metrics.lock().unwrap();
+                // --- Metrics Update ---
+                let passed_len = processed_seq_opt.as_ref().map_or(0, |v| v.len());
+                let passed_qc = processed_seq_opt.is_some();
+                {
+                    // Scoped lock for metrics
+                    let mut metrics_guard = metrics.lock()?; // Use '?' for PoisonError conversion
                     metrics_guard.total_reads += 1;
-                    metrics_guard.total_bases += seq.len();
+                    metrics_guard.total_bases += original_len;
+                    if passed_qc {
+                        metrics_guard.passed_reads += 1;
+                        metrics_guard.passed_bases += passed_len;
+                    }
+                } // Mutex guard dropped
 
-                    None
+                // --- Signature Update ---
+                if let Some(processed_seq) = processed_seq_opt {
+                    if !processed_seq.is_empty() {
+                        let mut sig_guard = signature.lock()?; // Use '?' for PoisonError conversion
+                                                               // Call add_sequence on the inner KmerSignature fields
+                                                               // Assuming KmerSignature has add_sequence method returning Result<(), SigError>
+                        sig_guard
+                            .macro_signature
+                            .add_sequence(&processed_seq)
+                            .map_err(|e| {
+                                ProcessingError::SignatureError(format!(
+                                    "Macro sig update failed: {}",
+                                    e
+                                ))
+                            })?;
+                        sig_guard
+                            .meso_signature
+                            .add_sequence(&processed_seq)
+                            .map_err(|e| {
+                                ProcessingError::SignatureError(format!(
+                                    "Meso sig update failed: {}",
+                                    e
+                                ))
+                            })?;
+                    }
                 }
-            })
-            .collect();
-
-        // Add passing reads to signature
-        let mut sig_guard = signature.lock().unwrap();
-        for seq_opt in results {
-            if let Some(seq) = seq_opt {
-                sig_guard
-                    .add_sequence(&seq)
-                    .map_err(|e| ProcessingError::SignatureError(format!("{}", e)))?;
-            }
-        }
-
-        Ok(())
+                Ok(()) // Success for this item
+            }) // try_for_each propagates first Err
     }
 
-    /// Apply quality control to a read
+    /// Apply quality control filters to a single read.
     fn apply_quality_control(&self, seq: &[u8], qual: Option<&Vec<u8>>) -> Option<Vec<u8>> {
-        // Check length
+        // Apply QC logic (keeping previous implementation as it seems reasonable)
         if seq.len() < self.qc_params.min_length {
             return None;
         }
 
-        // Check N content
-        let n_count = seq.iter().filter(|&&base| base == b'N').count();
+        let n_count = seq
+            .iter()
+            .filter(|&&base| base == b'N' || base == b'n')
+            .count();
         let n_percent = 100.0 * n_count as f64 / seq.len() as f64;
         if n_percent > self.qc_params.max_n_percent {
             return None;
         }
 
-        // Check and apply quality trimming
         if let Some(qual_vec) = qual {
-            // Calculate average quality
-            let avg_quality =
-                qual_vec.iter().map(|&q| (q - 33) as f64).sum::<f64>() / qual_vec.len() as f64;
+            if qual_vec.len() != seq.len() {
+                error!(
+                    "Seq/Qual length mismatch ({} vs {}). Discarding.",
+                    seq.len(),
+                    qual_vec.len()
+                );
+                return None;
+            }
+            if qual_vec.is_empty() {
+                return None;
+            }
 
+            let avg_quality = qual_vec
+                .iter()
+                .map(|&q| q.saturating_sub(33) as f64)
+                .sum::<f64>()
+                / qual_vec.len() as f64;
             if avg_quality < self.qc_params.min_avg_quality {
                 return None;
             }
 
-            // Find quality-based trim positions
             let mut trim_start = 0;
             let mut trim_end = seq.len();
-
-            // Trim from start
+            let mut found_start = false;
             for (i, &q) in qual_vec.iter().enumerate() {
-                if (q - 33) as u8 >= self.qc_params.trim_quality {
+                if q.saturating_sub(33) >= self.qc_params.trim_quality {
                     trim_start = i;
+                    found_start = true;
                     break;
                 }
             }
-
-            // Trim from end
-            for i in (0..qual_vec.len()).rev() {
-                if (qual_vec[i] - 33) as u8 >= self.qc_params.trim_quality {
-                    trim_end = i + 1;
-                    break;
-                }
-            }
-
-            // Check if trimmed read is long enough
-            if trim_end - trim_start < self.qc_params.min_length {
+            if !found_start {
                 return None;
             }
 
-            // Return trimmed sequence
+            let mut found_end = false;
+            for i in (trim_start..qual_vec.len()).rev() {
+                if qual_vec[i].saturating_sub(33) >= self.qc_params.trim_quality {
+                    trim_end = i + 1;
+                    found_end = true;
+                    break;
+                }
+            }
+            if !found_end {
+                return None;
+            }
+
+            if trim_start >= trim_end || (trim_end - trim_start) < self.qc_params.min_length {
+                return None;
+            }
+
             Some(seq[trim_start..trim_end].to_vec())
         } else {
-            // No quality scores available, return the original sequence
-            Some(seq.to_vec())
+            Some(seq.to_vec()) // Passed length/N%, no quality scores
         }
     }
 
-    /// Get hierarchical classifications at different taxonomic levels
+    /// Finalize metrics calculations (processing time, average length).
+    fn finalize_metrics(
+        &self,
+        metrics_arc: Arc<Mutex<ProcessingMetrics>>,
+        processing_time_seconds: f64,
+    ) -> Result<ProcessingMetrics, ProcessingError> {
+        let mut metrics_guard = metrics_arc.lock()?; // Use '?'
+        metrics_guard.processing_time_seconds = processing_time_seconds;
+        if metrics_guard.passed_reads > 0 {
+            metrics_guard.avg_read_length =
+                metrics_guard.passed_bases as f64 / metrics_guard.passed_reads as f64;
+        } else {
+            metrics_guard.avg_read_length = 0.0; // Avoid division by zero
+        }
+        // Clone the final metrics struct
+        Ok(metrics_guard.clone())
+    }
+
+    /// Get hierarchical classifications (currently just the best hit).
     fn get_hierarchical_classifications(
         &self,
         signature: &MultiResolutionSignature,
         classifier: &AdaptiveClassifier,
     ) -> Result<Vec<Classification>, ProcessingError> {
-        // Get classification at different resolution levels
-        let macro_classification = classifier
-            .classify(signature)
-            .map_err(|e| ProcessingError::ClassificationError(format!("{}", e)))?;
-
-        // Create a vector of classifications at different levels
-        let mut classifications = Vec::new();
-        classifications.push(macro_classification);
-
-        // Add any additional hierarchical classifications if needed
-        // For example, if we classified at species level, we might want to add genus, family, etc.
-
-        Ok(classifications)
+        let best_classification = classifier.classify(signature)?; // Propagate error
+        Ok(vec![best_classification])
     }
 
-    /// Estimate strain abundances in the sample
+    /// Estimate strain abundances if classification is specific enough.
+    fn run_strain_estimation(
+        &self,
+        final_signature: &MultiResolutionSignature,
+        classifications: &[Classification],
+    ) -> Result<HashMap<String, (f64, f64)>, ProcessingError> {
+        if let Some(cls) = classifications.first() {
+            if cls.level <= TaxonomicLevel::Species {
+                info!(
+                    "Classification at/below species level ('{}', {:?}). Estimating strains...",
+                    cls.taxon_id, cls.level
+                );
+                let classifier = self.get_classifier()?; // Get classifier ref again
+                self.estimate_strain_abundances(final_signature, classifier, &cls.taxon_id)
+            } else {
+                info!(
+                    "Classification level ({:?}) is above Species. Skipping strain estimation.",
+                    cls.level
+                );
+                Ok(HashMap::new())
+            }
+        } else {
+            warn!("No classification available to guide strain estimation.");
+            Ok(HashMap::new())
+        }
+    }
+
+    /// Estimate relative abundances of strains related to the classified species.
     fn estimate_strain_abundances(
         &self,
-        signature: &MultiResolutionSignature,
+        sample_signature: &MultiResolutionSignature,
         classifier: &AdaptiveClassifier,
+        target_species_id: &str,
     ) -> Result<HashMap<String, (f64, f64)>, ProcessingError> {
-        // For simplicity, we'll use the best-matching strains from the classification
-        // In a real implementation, we would extract k-mer profiles and use the Bayesian model
+        debug!(
+            "Filtering references for strain estimation relative to {}",
+            target_species_id
+        );
 
-        // Get related reference signatures
-        let species_id = signature.taxon_id.clone();
-        let related_strains = classifier
-            .references
+        // Filter references based on lineage and ensure they are not the target species itself
+        let relevant_strains: Vec<_> = classifier
+            .references // Assuming Vec<Arc<MultiResolutionSignature>>
             .iter()
             .filter(|ref_sig| {
-                ref_sig.lineage.contains(&species_id) || ref_sig.taxon_id == species_id
+                ref_sig.lineage.contains(&target_species_id.to_string())
+                    && ref_sig.taxon_id != target_species_id
             })
-            .collect::<Vec<_>>();
+            .collect();
 
-        if related_strains.is_empty() {
+        if relevant_strains.is_empty() {
+            warn!(
+                "No potential reference strains found downstream of target {}.",
+                target_species_id
+            );
             return Ok(HashMap::new());
         }
+        info!(
+            "Found {} potential reference strains for target {}.",
+            relevant_strains.len(),
+            target_species_id
+        );
 
-        // Calculate similarities to each related strain
+        // Calculate similarities
         let mut similarities = HashMap::new();
         let mut total_similarity = 0.0;
-
-        for strain in related_strains {
-            let sim = signature.similarity(strain, None);
-            similarities.insert(strain.taxon_id.clone(), sim);
-            total_similarity += sim;
-        }
-
-        // Normalize to get abundance estimates
-        let mut abundances = HashMap::new();
-
-        if total_similarity > 0.0 {
-            for (id, sim) in similarities {
-                // Normalize and add confidence interval (simplified)
-                let abundance = sim / total_similarity;
-                let confidence = 0.1 * abundance; // Simplified confidence calculation
-                abundances.insert(id, (abundance, confidence));
+        for strain_sig in relevant_strains {
+            // Use overall weighted similarity (None uses weights defined in signature)
+            // Or specify a level like Some(ResolutionLevel::Meso) if desired
+            let sim = sample_signature.similarity(strain_sig, None);
+            if sim > f64::EPSILON {
+                // Use epsilon for float comparison
+                // Clone the taxon_id string for the HashMap key
+                similarities.insert(strain_sig.taxon_id.clone(), sim);
+                total_similarity += sim;
             }
         }
 
-        Ok(abundances)
-    }
-}
+        // Normalize to get abundances
+        let mut abundances = HashMap::new();
+        if total_similarity > f64::EPSILON {
+            for (id, sim) in similarities {
+                // `id` is already String here
+                let abundance = sim / total_similarity;
+                let confidence = sim.min(1.0); // Use similarity as a proxy for confidence (0-1) - very basic!
+                abundances.insert(id, (abundance, confidence)); // id is moved into map here
+            }
+        } else {
+            info!("Total similarity to relevant strains is negligible.");
+        }
 
-/// Generate a text report from classification results
+        // Sort abundances for logging (optional)
+        let mut sorted_abundances: Vec<_> = abundances.iter().collect();
+        sorted_abundances.sort_by(|a, b| {
+            b.1 .0
+                .partial_cmp(&a.1 .0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (id, (abundance, confidence)) in sorted_abundances {
+            info!(
+                "  Strain {}: Relative Abundance ~{:.2}%, Confidence {:.2}",
+                id,
+                abundance * 100.0,
+                confidence // Confidence is now 0-1
+            );
+        }
+
+        Ok(abundances) // Return the calculated abundances map
+    }
+
+    /// Assemble the final results structure and save it to a JSON file.
+    fn assemble_and_save_results(
+        &self,
+        sample_id: &str,
+        metrics: ProcessingMetrics,
+        classifications: Vec<Classification>,
+        strain_abundances: HashMap<String, (f64, f64)>,
+        output_path: &Path,
+    ) -> Result<ClassificationResults, ProcessingError> {
+        let results_file_path = output_path.join(format!("{}_results.json", sample_id));
+
+        let results = ClassificationResults {
+            sample_id: sample_id.to_string(),
+            metrics,
+            classifications,
+            strain_abundances,
+            results_file: Some(results_file_path.clone()),
+        };
+
+        info!("Writing final results to {}", results_file_path.display());
+        let file = File::create(&results_file_path)?;
+        let writer = BufWriter::new(file);
+        // Use serde_json to write pretty-printed JSON
+        serde_json::to_writer_pretty(writer, &results)
+            .map_err(|e| ProcessingError::IoError(io::Error::new(io::ErrorKind::Other, e)))?;
+
+        Ok(results)
+    }
+
+    /// Log summary metrics after processing.
+    fn log_summary_metrics(&self, metrics: &ProcessingMetrics) {
+        info!(
+            "Summary Metrics: Reads Passed QC: {} / {} ({:.1}%)",
+            metrics.passed_reads,
+            metrics.total_reads,
+            100.0 * metrics.passed_reads as f64 / metrics.total_reads.max(1) as f64
+        );
+        info!(
+            "Summary Metrics: Avg Read Length (Passed QC): {:.1} bp",
+            metrics.avg_read_length
+        );
+        info!(
+            "Summary Metrics: Total Processing Time: {:.2} seconds",
+            metrics.processing_time_seconds
+        );
+    }
+} // end impl FastqProcessor
+
+// --- Report Generation --- (Keeping definition as provided)
+
+/// Generate a formatted text report from the classification results.
 pub fn generate_report(results: &ClassificationResults) -> Result<String, ProcessingError> {
     let mut report = String::new();
 
-    // Add header
+    // Header
     report.push_str(&format!(
-        "AHSP Classification Report for Sample: {}\n",
+        "Classification Report for Sample: {}\n",
         results.sample_id
     ));
     report.push_str("=================================================\n\n");
 
-    // Add processing metrics
+    // Metrics Section
     report.push_str("Processing Metrics:\n");
-    report.push_str(&format!("  Total reads: {}\n", results.metrics.total_reads));
     report.push_str(&format!(
-        "  Passed QC: {} ({:.1}%)\n",
+        "  Total reads processed: {}\n",
+        results.metrics.total_reads
+    ));
+    report.push_str(&format!(
+        "  Reads passed QC: {} ({:.1}%)\n",
         results.metrics.passed_reads,
         100.0 * results.metrics.passed_reads as f64 / results.metrics.total_reads.max(1) as f64
     ));
     report.push_str(&format!(
-        "  Average read length: {:.1} bp\n",
+        "  Bases passed QC: {}\n",
+        results.metrics.passed_bases
+    ));
+    report.push_str(&format!(
+        "  Average read length (passed QC): {:.1} bp\n",
         results.metrics.avg_read_length
     ));
     report.push_str(&format!(
@@ -518,67 +731,90 @@ pub fn generate_report(results: &ClassificationResults) -> Result<String, Proces
         results.metrics.processing_time_seconds
     ));
 
-    // Add classification results
-    report.push_str("Classification Results:\n");
+    // Classification Section
+    if results.classifications.is_empty() {
+        report.push_str("Classification Results: No confident classification found.\n\n");
+    } else {
+        report.push_str("Classification Results (Top Hit):\n");
+        if let Some(classification) = results.classifications.first() {
+            report.push_str(&format!("  Taxon ID: {}\n", classification.taxon_id));
+            report.push_str(&format!("  Taxonomic level: {:?}\n", classification.level));
+            report.push_str(&format!("  Confidence: {:.4}\n", classification.confidence));
 
-    for (i, classification) in results.classifications.iter().enumerate() {
-        report.push_str(&format!("Classification #{}\n", i + 1));
-        report.push_str(&format!("  Taxon ID: {}\n", classification.taxon_id));
-        report.push_str(&format!("  Taxonomic level: {:?}\n", classification.level));
-        report.push_str(&format!("  Confidence: {:.2}\n", classification.confidence));
+            if !classification.lineage.is_empty() {
+                report.push_str("  Lineage: ");
+                report.push_str(&classification.lineage.join(" > "));
+                report.push('\n');
+            } else {
+                report.push_str("  Lineage: N/A\n");
+            }
 
-        // Add lineage
-        if !classification.lineage.is_empty() {
-            report.push_str("  Lineage: ");
-            for (j, taxon) in classification.lineage.iter().enumerate() {
-                if j > 0 {
-                    report.push_str(" > ");
+            report.push_str("  Similarity scores:\n");
+            if classification.similarity_scores.is_empty() {
+                report.push_str("    N/A\n");
+            } else {
+                // Sort scores by value (descending)
+                let mut sorted_scores: Vec<_> = classification.similarity_scores.iter().collect();
+                sorted_scores.sort_by(|(_, score_a), (_, score_b)| {
+                    score_b
+                        .partial_cmp(score_a)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for (level, score) in sorted_scores {
+                    report.push_str(&format!("    {:?}: {:.4}\n", level, score));
+                    // Assumes level is Debug
                 }
-                report.push_str(taxon);
             }
             report.push('\n');
         }
-
-        // Add similarity scores
-        report.push_str("  Similarity scores:\n");
-        for (level, score) in &classification.similarity_scores {
-            report.push_str(&format!("    {:?}: {:.2}\n", level, score));
-        }
-        report.push('\n');
     }
 
-    // Add strain abundances if available
+    // Strain Abundance Section
     if !results.strain_abundances.is_empty() {
-        report.push_str("Strain Abundances:\n");
-
-        // Sort strains by abundance
+        report.push_str("Strain Abundance Estimates (relative within classified group):\n");
         let mut strains: Vec<_> = results.strain_abundances.iter().collect();
-        strains.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap());
-
+        strains.sort_by(|a, b| {
+            b.1 .0
+                .partial_cmp(&a.1 .0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         for (strain_id, (abundance, confidence)) in strains {
-            report.push_str(&format!(
-                "  {}: {:.2}% (±{:.2}%)\n",
-                strain_id,
-                abundance * 100.0,
-                confidence * 100.0
-            ));
+            if *abundance > 1e-6 {
+                report.push_str(&format!(
+                    "  - {}: Abundance ~{:.2}%, Confidence ~{:.2}\n", // Use confidence proxy
+                    strain_id,
+                    abundance * 100.0,
+                    confidence // Confidence is now 0-1 score
+                ));
+            }
         }
         report.push('\n');
+    } else if results
+        .classifications
+        .first()
+        .map_or(false, |c| c.level <= TaxonomicLevel::Species)
+    {
+        report.push_str(
+            "Strain Abundance Estimates: No significant strain abundance detected or resolved.\n\n",
+        );
     }
 
-    // Add footer
+    // Footer
+    report.push_str("----\n");
     report.push_str(&format!(
-        "Results file: {}\n",
+        "Results JSON: {}\n",
         results
             .results_file
             .as_ref()
-            .map_or("None".to_string(), |p| p.display().to_string())
+            .map_or_else(|| "Not saved".to_string(), |p| p.display().to_string()) // Use map_or_else
     ));
 
     Ok(report)
 }
 
-/// Command-line interface for FASTQ processing
+// --- CLI Runner --- (Keeping definition as provided)
+
+/// Command-line interface function to run the FASTQ processor.
 pub fn run_fastq_cli(
     fastq_path: impl AsRef<Path>,
     sample_id: &str,
@@ -587,29 +823,61 @@ pub fn run_fastq_cli(
     threads: usize,
 ) -> Result<(), ProcessingError> {
     // Initialize logger
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Create FASTQ processor
+    // Log inputs
+    info!("=== Starting FASTQ Processing ===");
+    info!("Sample ID: {}", sample_id);
+    info!("Input FASTQ: {}", fastq_path.as_ref().display());
+    info!("Database Path: {}", db_path.as_ref().display());
+    info!("Output Directory: {}", output_dir.as_ref().display());
+    info!("Threads: {}", threads);
+
+    // Hardcoded parameters (replace with CLI parsing in a real app)
+    let macro_k = 31;
+    let meso_k = 21;
+    let sketch_size = 1000;
+    let qc_params = QualityControlParams::default();
+    info!(
+        "Parameters: Macro K={}, Meso K={}, Sketch Size={}, QC={:?}",
+        macro_k, meso_k, sketch_size, qc_params
+    );
+
+    // Create and initialize processor
     let mut processor = FastqProcessor::new(
-        db_path,
-        "genome_cache", // Default cache directory
+        db_path,             // No need for as_ref() here, new() takes impl AsRef
+        output_dir.as_ref(), // Use output_dir as cache_dir for simplicity
         threads,
-        31,   // Default macro_k
-        21,   // Default meso_k
-        1000, // Default sketch_size
-        None, // Default QC parameters
+        macro_k,
+        meso_k,
+        sketch_size,
+        Some(qc_params),
         None, // No API key
     )?;
 
-    // Initialize classifier
-    processor.init_classifier()?;
+    processor.init_classifier()?; // Initialize before processing
 
-    // Process FASTQ file
-    let results = processor.process_file(fastq_path, sample_id, output_dir)?;
+    // Process the file
+    let results = processor.process_file(
+        fastq_path, // No need for as_ref() here
+        sample_id, output_dir, // No need for as_ref() here
+    )?;
 
     // Generate and print report
+    info!("Generating final report...");
     let report = generate_report(&results)?;
-    println!("{}", report);
+    println!("\n{}", report); // Print report to stdout
 
+    // Log output file location
+    if let Some(ref report_file) = results.results_file {
+        info!("Detailed results saved to: {}", report_file.display());
+    } else {
+        warn!("Results file path was not set."); // Should not happen if saved correctly
+    }
+
+    info!(
+        "=== Processing Finished Successfully for Sample: {} ===",
+        sample_id
+    );
     Ok(())
 }

@@ -118,7 +118,7 @@ pub fn write_count_table(table: &CountTable, output_path: &str) -> Result<()> {
 ///
 /// # Returns
 ///
-/// * `Result<crate::metadata::Metadata>` - Loaded metadata structure or an error.
+/// * `Result<Metadata>` - Loaded metadata structure or an error.
 pub fn read_metadata(metadata_path: &str) -> Result<crate::metadata::Metadata> {
     crate::metadata::load_metadata(metadata_path)
 }

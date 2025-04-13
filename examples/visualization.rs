@@ -1,3 +1,4 @@
+use crate::main::FastqProcessor;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Process a FASTQ file
     let mut processor = FastqProcessor::new(

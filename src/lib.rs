@@ -1,7 +1,9 @@
 pub mod adaptive;
 pub mod bio;
 pub mod count_table;
+pub mod database;
 pub mod io;
 pub mod metadata;
 pub mod sketch;
 pub mod stats;
+pub mod utils;

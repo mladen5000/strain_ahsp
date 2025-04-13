@@ -13,7 +13,7 @@ pub enum ClassificationError {
 }
 
 /// Taxonomic levels from domain to strain
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum TaxonomicLevel {
     Domain,
     Phylum,
