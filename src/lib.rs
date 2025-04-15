@@ -1,9 +1,14 @@
 pub mod adaptive;
 pub mod bio;
+pub mod cli;
+pub mod config;
 pub mod count_table;
 pub mod database;
 pub mod io;
 pub mod metadata;
+pub mod normalization;
+pub mod pipeline;
 pub mod sketch;
 pub mod stats;
+pub mod strain_method;
 pub mod utils;

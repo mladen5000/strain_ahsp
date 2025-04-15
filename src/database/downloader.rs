@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 // Assuming the dummy definitions above are in src/sketch/signature.rs
-use crate::pipeline::qc::{MultiResolutionSignature, SignatureBuilder}; // Add MultiResolutionSignature from qc
+use crate::pipeline::qc;
+use crate::sketch::signature::MultiResolutionSignature; // Add MultiResolutionSignature from qc
 use bincode::config::standard;
 use bincode::{decode_from_slice, encode_to_vec};
 use log::{error, info, warn};

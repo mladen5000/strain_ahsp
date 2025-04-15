@@ -1,2 +1,4 @@
 /target/
 /src/database/README_files/libs
+Cargo.lock
+.DS_Store

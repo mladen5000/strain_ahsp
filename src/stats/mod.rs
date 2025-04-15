@@ -11,7 +11,6 @@ pub use bayesian::StrainMixtureModel;
 pub use deconvolution::StrainDeconvolution;
 
 use crate::count_table::CountTable;
-use crate::metadata::Metadata;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -99,7 +98,7 @@ fn validate_metadata(table: &CountTable, metadata: &SampleMetadata) -> Result<()
     let metadata_samples: std::collections::HashSet<_> = metadata
         .sample_info
         .iter() // Change from get(k) to iter() to access all samples
-        .flat_map(|(_, info)| info.condition_map.keys())
+        .flat_map(|(_, info)| info.keys())
         .cloned()
         .collect();
 
