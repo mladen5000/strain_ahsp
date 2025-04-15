@@ -7,15 +7,17 @@
 use crate::sketch::signature::Signature;
 use crate::sketch::Sketcher; // Implement the common Sketcher trait
 
+pub use crate::adaptive::AdaptiveClassifier;
+pub use crate::sketch::signature::MultiResolutionSignature;
+pub use crate::sketch::SignatureBuilder;
 use anyhow::{anyhow, Result};
 use bio::io::fasta::Record as SequenceRecord2;
 use needletail::parser::SequenceRecord;
 use needletail::FastxReader;
 use needletail::Sequence;
 use std::collections::hash_map::DefaultHasher; // Simple default hasher
-use std::hash::{Hash, Hasher};
-// Consider using more robust hashing like xxHash or MurmurHash3 via crates
-// e.g., use fasthash::xx;
+use std::hash::{Hash, Hasher}; // Consider using more robust hashing like xxHash or MurmurHash3 via crates
+                               // e.g., use fasthash::xx;
 
 /// Structure for creating MinHash sketches.
 #[derive(Debug, Clone)]
@@ -70,8 +72,11 @@ impl Sketcher for MinHashSketcher {
     /// for simplicity, which is technically equivalent to MinHash under certain assumptions.
     /// A more standard implementation would use `num_hashes` different hash functions.
     fn sketch_sequence(&self, record: &SequenceRecord) -> Result<Signature> {
-        let mut signature = Signature::new("minhash".to_string(), self.kmer_size, self.num_hashes);
-        signature.name = Some(String::from_utf8_lossy(record.id()).into_owned());
+        let mut signature = Signature::new(
+            "minhash".to_string(),
+            self.kmer_size,
+            self.num_hashes.try_into().unwrap(),
+        );
         // signature.filename = ... // Can be set later if sketching from a file context
 
         let seq = record.sequence();

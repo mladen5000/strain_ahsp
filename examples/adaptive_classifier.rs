@@ -1,5 +1,8 @@
-use crate::sketch::minhash::{AdaptiveClassifier, MultiResolutionSignature, SignatureBuilder};
-use crate::strain_ahsp::bio::stats::bayesian::StrainMixtureModel;
+use strain_ahsp::sketch::minhash::{
+    AdaptiveClassifier, MultiResolutionSignature, SignatureBuilder,
+};
+use strain_ahsp::stats::StrainMixtureModel;
+
 use std::error::Error;
 use std::path::Path;
 

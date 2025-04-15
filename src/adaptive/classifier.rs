@@ -152,7 +152,6 @@ impl AdaptiveClassifier {
         query: &MultiResolutionSignature,
     ) -> Result<Classification, ClassificationError> {
         // Check if we have enough coverage
-        // (We'll just assume a fixed value for now since total_kmers isn't available on Signature)
         let total_coverage = 1000; // Placeholder value
         if total_coverage < self.min_coverage {
             return Err(ClassificationError::InsufficientCoverage);
@@ -161,61 +160,32 @@ impl AdaptiveClassifier {
         // Find best matching reference at each level
         let (best_match_id, best_match_idx, best_similarities) = self.find_best_match(query);
 
-        // Initialize classification with finest resolution
+        // Find best confidence and corresponding taxonomic level
         let mut best_level = TaxonomicLevel::Strain;
-        let mut best_confidence = *best_similarities
-            .get(&ResolutionLevel::Micro)
-            .unwrap_or(&0.0);
+        let mut best_confidence = 0.0;
 
-        // Check if confidence meets threshold for strain level
-        let strain_threshold = self
-            .thresholds
-            .thresholds
-            .get(&TaxonomicLevel::Strain)
-            .unwrap_or(&0.65);
-        if best_confidence < *strain_threshold {
-            // Fall back to strain group level
-            best_level = TaxonomicLevel::StrainGroup;
-            best_confidence = *best_similarities
-                .get(&ResolutionLevel::Meso)
-                .unwrap_or(&0.0);
+        // Map resolution levels to taxonomic levels and check thresholds
+        for (resolution_level, confidence) in best_similarities.iter() {
+            let taxonomic_level = match resolution_level {
+                ResolutionLevel::Micro => TaxonomicLevel::Strain,
+                ResolutionLevel::Meso => TaxonomicLevel::StrainGroup,
+                ResolutionLevel::Macro => TaxonomicLevel::Species,
+                ResolutionLevel::Custom(_) => continue, // Skip custom levels
+            };
 
-            // Check if confidence meets threshold for strain group level
-            let strain_group_threshold = self
-                .thresholds
-                .thresholds
-                .get(&TaxonomicLevel::StrainGroup)
-                .unwrap_or(&0.70);
-            if best_confidence < *strain_group_threshold {
-                // Fall back to species level
-                best_level = TaxonomicLevel::Species;
-                best_confidence = *best_similarities
-                    .get(&ResolutionLevel::Macro)
-                    .unwrap_or(&0.0);
-
-                // Continue falling back through taxonomy if needed
-                let mut current_level = best_level;
-                let mut current_confidence = best_confidence;
-
-                while current_level != TaxonomicLevel::Domain {
-                    let threshold = self
-                        .thresholds
-                        .thresholds
-                        .get(&current_level)
-                        .unwrap_or(&0.75);
-                    if current_confidence < *threshold {
-                        current_level = current_level.parent();
-                        // Adjust confidence based on taxonomic level
-                        // This is a simplified approach - in practice would use LCA or other methods
-                        current_confidence += 0.05; // Confidence increases at higher taxonomic levels
-                    } else {
-                        break;
-                    }
+            if let Some(threshold) = self.thresholds.thresholds.get(&taxonomic_level) {
+                if *confidence >= *threshold && *confidence > best_confidence {
+                    best_confidence = *confidence;
+                    best_level = taxonomic_level;
                 }
-
-                best_level = current_level;
-                best_confidence = current_confidence;
             }
+        }
+
+        // If no level meets its threshold, fall back through taxonomy
+        if best_confidence < *self.thresholds.thresholds.get(&best_level).unwrap_or(&0.65) {
+            best_level = best_level.parent();
+            // Add a small confidence boost for higher taxonomic levels
+            best_confidence += 0.05;
         }
 
         // Build classification result
@@ -227,7 +197,6 @@ impl AdaptiveClassifier {
             if idx < reference.lineage.len() {
                 result_lineage = reference.lineage[0..=idx].to_vec();
             } else {
-                // Partial lineage if complete one not available
                 result_lineage = reference.lineage.clone();
             }
         }
@@ -257,28 +226,30 @@ impl AdaptiveClassifier {
 
         // Compare with each reference
         for (i, reference) in self.references.iter().enumerate() {
-            // Calculate similarity at each resolution level
-            let macro_sim = query
-                .macro_signature
-                .jaccard_similarity(&reference.macro_signature);
-            let meso_sim = query
-                .meso_signature
-                .jaccard_similarity(&reference.meso_signature);
-            let micro_sim = query
-                .micro_signature
-                .jaccard_similarity(&reference.micro_signature);
+            // Calculate weighted similarity between signatures
+            if let Some(weighted_sim) = query.similarity(reference, None) {
+                if weighted_sim > best_overall_similarity {
+                    best_overall_similarity = weighted_sim;
+                    best_match_idx = i;
 
-            // Calculate overall weighted similarity
-            let weighted_sim = query.similarity(reference, None);
-
-            if weighted_sim > best_overall_similarity {
-                best_overall_similarity = weighted_sim;
-                best_match_idx = i;
-
-                best_similarities = HashMap::new();
-                best_similarities.insert(ResolutionLevel::Macro, macro_sim);
-                best_similarities.insert(ResolutionLevel::Meso, meso_sim);
-                best_similarities.insert(ResolutionLevel::Micro, micro_sim);
+                    // Record similarities at each resolution level
+                    best_similarities = HashMap::new();
+                    for (idx, level) in query.levels.iter().enumerate() {
+                        if idx < reference.levels.len() {
+                            if let Some(sim) = level.jaccard_similarity(&reference.levels[idx]) {
+                                best_similarities.insert(
+                                    match idx {
+                                        0 => ResolutionLevel::Macro,
+                                        1 => ResolutionLevel::Meso,
+                                        2 => ResolutionLevel::Micro,
+                                        _ => ResolutionLevel::Custom(idx as u8),
+                                    },
+                                    sim,
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
 

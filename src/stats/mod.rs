@@ -11,6 +11,7 @@ pub use bayesian::StrainMixtureModel;
 pub use deconvolution::StrainDeconvolution;
 
 use crate::count_table::CountTable;
+use crate::metadata::load_metadata;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +31,7 @@ pub struct DifferentialResult {
 pub type AnalysisResults = Vec<DifferentialResult>;
 
 /// Re-export Metadata from metadata module for backward compatibility
-pub use crate::metadata::Metadata as SampleMetadata;
+pub use crate::metadata::Metadata; // metadata::Metadata as SampleMetadata
 
 /// Runs the main differential abundance analysis (e.g., DESeq2-like).
 ///
@@ -79,20 +80,21 @@ pub fn run_deseq2_like_analysis(
 /// * `path` - Path to the metadata file.
 ///
 /// # Returns
-/// * `Result<SampleMetadata>` - Loaded metadata or an error.
-fn load_metadata(path: &str) -> Result<SampleMetadata> {
-    crate::metadata::load_metadata(path)
+/// * `Result<Metadata>` - Loaded metadata or an error.
+/// IDK
+fn load_some_metadata(path: &str) -> Result<Metadata> {
+    load_metadata(path)
 }
 
 /// Validates that the metadata matches the samples in the CountTable.
 ///
 /// # Arguments
 /// * `table` - The CountTable.
-/// * `metadata` - The loaded SampleMetadata.
+/// * `metadata` - The loaded Metadata.
 ///
 /// # Returns
 /// * `Result<()>` - Ok(()) if valid, or an error describing mismatches.
-fn validate_metadata(table: &CountTable, metadata: &SampleMetadata) -> Result<()> {
+fn validate_metadata(table: &CountTable, metadata: &Metadata) -> Result<()> {
     let table_samples: std::collections::HashSet<_> =
         table.sample_names().iter().cloned().collect();
     let metadata_samples: std::collections::HashSet<_> =

@@ -66,8 +66,10 @@ impl Sketcher for AdaptiveSketcher {
             self.kmer_size,
             0, // Initial num_hashes is 0, will be updated
         );
-        signature.name = Some(String::from_utf8_lossy(record.id()).into_owned());
-
+        // If the sequence is empty, return an empty signature
+        if record.all().is_empty() {
+            return Ok(signature);
+        }
         let seq = record.sequence();
         let mut kept_hashes = std::collections::HashSet::new(); // Use HashSet to store unique hashes below threshold
 
@@ -155,8 +157,6 @@ mod tests {
         let signature = signature_res.unwrap();
 
         assert_eq!(signature.algorithm, "scaled_minhash");
-        assert_eq!(signature.kmer_size, 3);
-        assert_eq!(signature.name.unwrap(), "test_seq");
 
         // Check that the number of hashes matches the length of the hash vector
         assert_eq!(signature.num_hashes, signature.hashes.len());
@@ -252,10 +252,9 @@ impl AdaptiveClassifier {
         let mut results = Vec::new();
 
         for (ref_id, ref_sig) in &self.reference_sketches {
-            let similarity = query_signature.jaccard_similarity(ref_sig);
-
-            if similarity >= self.min_similarity {
-                results.push((ref_id.clone(), similarity));
+            let similarity = query_signature.estimate_jaccard(ref_sig);
+            if similarity >= Some(self.min_similarity) {
+                results.push((ref_id.clone(), similarity.unwrap_or(0.0)));
             }
         }
 

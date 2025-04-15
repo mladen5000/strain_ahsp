@@ -1,17 +1,15 @@
 use std::error::Error;
-use std::path::Path;
+use strain_ahsp::adaptive::AdaptiveClassifier;
 use strain_ahsp::database::DatabaseManager;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize database manager
     let mut manager = DatabaseManager::new(
-        "ahsp_db",
+        "/path/to/something",
         "genome_cache",
-        31,   // macro_k
-        21,   // meso_k
-        1000, // sketch_size
-        8,    // threads
-        None, // api_key
+        31,                       // macro_k
+        21,                       // meso_k
+        Some("1000".to_string()), // sketch_size as Option<String>
     )?;
 
     // Check if database is empty

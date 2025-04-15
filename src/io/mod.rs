@@ -6,11 +6,12 @@
 pub mod fastq; // Sub-module specifically for FASTQ handling
 
 use crate::count_table::CountTable;
-use crate::stats::AnalysisResults; // Assuming stats module defines this
+// use crate::metadata::Metadata; // Using internally
+use crate::stats::{AnalysisResults, Metadata}; // Assuming stats module defines this
 use anyhow::Result;
 use csv; // Using the csv crate
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 use std::path::Path;
 
 /// Writes analysis results to a CSV file.
@@ -119,8 +120,8 @@ pub fn write_count_table(table: &CountTable, output_path: &str) -> Result<()> {
 /// # Returns
 ///
 /// * `Result<Metadata>` - Loaded metadata structure or an error.
-pub fn read_metadata(metadata_path: &str) -> Result<crate::metadata::Metadata> {
-    crate::metadata::load_metadata(metadata_path)
+pub fn read_metadata(metadata_path: &str) -> Result<Metadata> {
+    Metadata::from_file(metadata_path)
 }
 
 #[cfg(test)]

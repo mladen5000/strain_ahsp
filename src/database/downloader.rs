@@ -50,6 +50,9 @@ pub enum DatabaseError {
 
     #[error("UTF-8 conversion error: {0}")]
     Utf8Error(#[from] std::str::Utf8Error), // Added Utf8 error variant
+
+    #[error("Invalid signature: {0}")]
+    InvalidSignature(String), // Added InvalidSignature error variant
 }
 
 // Add conversion from bincode errors
@@ -623,13 +626,54 @@ impl SignatureDatabase {
         })
     }
 
+    /// Validate a signature's levels and compatibility
+    fn validate_signature(&self, signature: &MultiResolutionSignature) -> Result<(), DatabaseError> {
+        // Ensure signature has at least one level
+        if signature.levels.is_empty() {
+            return Err(DatabaseError::InvalidSignature(
+                "Signature must have at least one resolution level".to_string(),
+            ));
+        }
+
+        // Check that levels are properly ordered (decreasing k-mer size)
+        for window in signature.levels.windows(2) {
+            if window[0].kmer_size <= window[1].kmer_size {
+                return Err(DatabaseError::InvalidSignature(
+                    "Resolution levels must have decreasing k-mer sizes".to_string(),
+                ));
+            }
+        }
+
+        // Verify each level has valid parameters
+        for level in &signature.levels {
+            // Either num_hashes or scaled must be set, but not both
+            if (level.sketch.num_hashes == 0 && level.sketch.scaled == 0) 
+                || (level.sketch.num_hashes > 0 && level.sketch.scaled > 0) {
+                return Err(DatabaseError::InvalidSignature(
+                    "Each level must specify either num_hashes or scaled, but not both".to_string(),
+                ));
+            }
+
+            // Verify k-mer size is reasonable
+            if level.kmer_size == 0 || level.kmer_size > 63 {
+                return Err(DatabaseError::InvalidSignature(
+                    format!("Invalid k-mer size: {}", level.kmer_size),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Add a signature to the database
     pub fn add_signature(
-        &mut self,
+        &mut self, 
         signature: &MultiResolutionSignature,
     ) -> Result<(), DatabaseError> {
-        // Key: signature.taxon_id (e.g., accession)
-        // Value: serialized MultiResolutionSignature
+        // Validate signature structure
+        self.validate_signature(signature)?;
+
+        // Proceed with storage
         let key = signature.taxon_id.as_bytes();
         let signature_data = encode_to_vec(signature, standard())?;
 
@@ -640,9 +684,9 @@ impl SignatureDatabase {
         // Update indices
         self.update_indices(signature)?;
 
-        // Persist indices immediately after update
+        // Persist indices and data
         self.save_indices()?;
-        self.db.flush()?; // Ensure data is written to disk
+        self.db.flush()?;
 
         Ok(())
     }
@@ -655,23 +699,14 @@ impl SignatureDatabase {
         let signature_id = signature.taxon_id.clone();
 
         // Update taxonomy index (TaxID -> Set<SignatureID>)
-        // Assumes signature.lineage contains ("TaxID", "Name") pairs, BUT the current
-        // MultiResolutionSignature dummy has Vec<String> (names only).
-        // We need the actual TaxID from the GenomeMetadata or stored differently.
-        // For now, let's assume the *last* element of the lineage Vec<String> corresponds
-        // to the species name, and we use the signature ID itself as a proxy for taxid lookup?
-        // This is a placeholder until the lineage handling is consistent.
-        // A better approach: Store the actual TaxID in MultiResolutionSignature.
-        // Using the signature ID itself as the key here as a temporary measure:
         self.taxonomy_index
-            .entry(signature_id.clone()) // Using sig ID as placeholder key
+            .entry(signature_id.clone())
             .or_default()
             .insert(signature_id.clone());
 
         // Update lineage index (Name -> Set<SignatureID>)
         for name in &signature.lineage {
             if !name.is_empty() {
-                // Avoid indexing empty names
                 self.lineage_index
                     .entry(name.clone())
                     .or_default()
@@ -705,6 +740,8 @@ impl SignatureDatabase {
             Some(data) => {
                 let (signature, _): (MultiResolutionSignature, _) =
                     decode_from_slice(&data, standard())?;
+                // Validate retrieved signature
+                self.validate_signature(&signature)?;
                 Ok(signature)
             }
             None => Err(DatabaseError::NotFoundError(format!(
@@ -771,25 +808,27 @@ impl SignatureDatabase {
         let mut results = Vec::new();
         for item in self.db.iter() {
             let (key, value) = item?;
-            // Safely convert key to string, skip if invalid UTF-8 or index key
+            // Skip non-UTF8 keys and index entries
             if let Ok(key_str) = std::str::from_utf8(&key) {
                 if key_str == "taxonomy_index" || key_str == "lineage_index" {
                     continue;
                 }
 
                 match decode_from_slice::<MultiResolutionSignature, _>(&value, standard()) {
-                    Ok((signature, _)) => results.push(signature),
+                    Ok((signature, _)) => {
+                        if !signature.levels.is_empty() {
+                            results.push(signature);
+                        } else {
+                            warn!("Skipping signature {} with no resolution levels", key_str);
+                        }
+                    }
                     Err(e) => {
                         error!(
                             "Failed to decode signature data for key '{}': {}. Skipping.",
                             key_str, e
                         );
-                        // Continue to next item
                     }
                 }
-            } else {
-                warn!("Found non-UTF8 key in database: {:?}", key);
-                // Skip non-UTF8 keys as they are not expected signature IDs
             }
         }
         Ok(results)

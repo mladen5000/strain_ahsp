@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 // Assuming these imports are correct relative to your project structure
 use crate::pipeline::{
-    processor::{generate_report, QualityControlParams},
+    // processor::generate_report,
+    qc::QualityControlParams, // Changed import to use qc module
     FastqProcessor,
 };
 
@@ -89,7 +90,7 @@ pub fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 sample_id
             );
 
-            // Create QC parameters
+            // Create QC parameters with the correct type
             let qc_params = QualityControlParams {
                 min_avg_quality: min_quality,
                 min_length,

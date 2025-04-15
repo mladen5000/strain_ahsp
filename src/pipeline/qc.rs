@@ -17,6 +17,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use thiserror::Error;
 
+pub enum MoleculeType {
+    Dna,
+    Rna,
+}
+
+impl MoleculeType {
+    pub fn to_string(&self) -> String {
+        match self {
+            MoleculeType::Dna => String::from("DNA"),
+            MoleculeType::Rna => String::from("RNA"),
+        }
+    }
+}
+
 // --- Error Type ---
 #[derive(Error, Debug)]
 pub enum ProcessingError {
@@ -136,76 +150,46 @@ impl FastqProcessor {
 
     /// Initialize the classifier by loading and converting reference signatures.
     pub fn init_classifier(&mut self) -> Result<(), ProcessingError> {
-        info!("Fetching reference signatures from database...");
-        // Assume get_all_signatures returns Vec<Arc<SomeDbType>> where SomeDbType has the fields needed
-        // **This remains the most likely source of type errors if the assumption is wrong**
+        // Load reference signatures from database
         let db_references = self.db_manager.database.get_all_signatures().map_err(|e| {
             ProcessingError::DatabaseError(format!("Failed to get signatures: {}", e))
         })?;
 
-        if db_references.is_empty() {
-            return Err(ProcessingError::DatabaseError(
-                "No reference signatures found in the database.".to_string(),
-            ));
-        }
-        info!(
-            "Loaded {} reference signatures from DB.",
-            db_references.len()
-        );
-
-        // Fix 1: Convert DB signatures to the type expected by AdaptiveClassifier
-        // Assuming AdaptiveClassifier expects Vec<Arc<crate::sketch::signature::MultiResolutionSignature>>
+        // Convert database signatures to sketches
         let mut sketch_signatures: Vec<Arc<MultiResolutionSignature>> =
             Vec::with_capacity(db_references.len());
         for db_sig_arc in db_references {
-            // Check if essential signatures exist in the DB record
-            if db_sig_arc.macro_signature.name.is_none() || db_sig_arc.meso_signature.name.is_none()
-            {
-                warn!("Skipping reference signature {} due to missing macro or meso signature in DB data.", db_sig_arc.taxon_id);
+            // Check if signature has at least basic levels
+            if db_sig_arc.levels.len() < 2 {
+                warn!(
+                    "Skipping reference signature {} due to insufficient resolution levels",
+                    db_sig_arc.taxon_id
+                );
                 continue;
             }
 
-            // Construct the sketch::signature::MultiResolutionSignature
-            // Assumes the fields in db_sig_arc are compatible or directly usable KmerSignatures/Option<VariantProfile> etc.
-            // Also assumes the struct definition in sketch::signature matches this.
-            let sketch_sig = MultiResolutionSignature {
-                levels: db_sig_arc.levels.clone(), // Assuming levels is a field in the DB type
-                taxon_id: db_sig_arc.taxon_id.clone(),
-                lineage: db_sig_arc.lineage.clone(),
-                // Clone the KmerSignatures from the DB Arc<SomeDbType>
-                // This assumes db_sig_arc.macro_signature is Option<KmerSignature> or KmerSignature
-                macro_signature: db_sig_arc.macro_signature.clone(), // Unwrap because we checked for None
-                meso_signature: db_sig_arc.meso_signature.clone(), // Unwrap because we checked for None
-                // Clone micro signature if present in DB type, else None
-                micro_signature: db_sig_arc.micro_signature.clone(),
-            };
-            sketch_signatures.push(Arc::new(sketch_sig));
+            // Arc wrap and store the signature
+            sketch_signatures.push(Arc::new(db_sig_arc));
         }
 
-        if sketch_signatures.is_empty() {
-            return Err(ProcessingError::DatabaseError(
-                "Failed to convert any database signatures to the required sketch format."
-                    .to_string(),
-            ));
-        }
-
-        info!(
-            "Creating adaptive classifier with {} processed signatures...",
-            sketch_signatures.len()
+        // Configure and initialize classifier
+        let thresholds = None; // Use default thresholds
+        let min_coverage = Some(100); // Minimum coverage requirement
+        self.classifier = Some(
+            AdaptiveClassifier::new(
+                sketch_signatures
+                    .iter()
+                    .map(|sig: &Arc<MultiResolutionSignature>| {
+                        // Dereference the Arc to get the inner MultiResolutionSignature
+                        (**sig).clone()
+                    })
+                    .collect::<Vec<_>>(),
+                thresholds,
+                min_coverage,
+            )
+            .unwrap(),
         );
 
-        let sketch_signatures_owned: Vec<MultiResolutionSignature> = sketch_signatures
-            .iter()
-            .map(|sig| (**sig).clone())
-            .collect();
-
-        let classifier =
-            AdaptiveClassifier::new(sketch_signatures_owned, None, None).map_err(|e| {
-                ProcessingError::ClassificationError(format!("Classifier creation failed: {}", e))
-            })?;
-        info!("Classifier initialized successfully.");
-
-        self.classifier = Some(classifier);
         Ok(())
     }
 
@@ -236,41 +220,28 @@ impl FastqProcessor {
             processing_time_seconds: 0.0,
         }));
 
-        // Fix: Initialize Signature struct instead of KmerSignature for macro_signature
-        let macro_sig = Signature {
-            algorithm: "Macro".to_string(),
-            name: None,
-            kmer_size: self.macro_k,
-            num_hashes: 0,
-            filename: None,
-            path: None,
-            hashes: Vec::new(),
+        let macro_sig = KmerSignature {
+            sketch: Signature::new("minhash".to_string(), 100, 1000),
+            kmer_size: 21,
+            molecule_type: MoleculeType::Dna.to_string(),
+            name: Some("Macro Signature".to_string()),
+            filename: Some("macro_signature.txt".to_string()),
+            path: Some(PathBuf::from("/path/to/macro_signature")),
         };
-        let meso_sig = Signature {
-            algorithm: "Meso".to_string(),
-            name: None,
-            kmer_size: self.meso_k,
-            num_hashes: 0,
-            filename: None,
-            path: None,
-            hashes: Vec::new(),
+
+        let meso_sig = KmerSignature {
+            sketch: Signature::new("minhash".to_string(), 50, 500),
+            kmer_size: 21,
+            molecule_type: MoleculeType::Dna.to_string(),
+            name: Some("Meso Signature".to_string()),
+            filename: Some("meso_signature.txt".to_string()),
+            path: Some(PathBuf::from("/path/to/meso_signature")),
         };
 
         let initial_signature = MultiResolutionSignature {
             taxon_id: sample_id.to_string(),
             lineage: Vec::new(),
-            macro_signature: macro_sig,
-            meso_signature: meso_sig,
-            micro_signature: Signature {
-                algorithm: "Micro".to_string(),
-                name: None,
-                kmer_size: self.meso_k,
-                num_hashes: 0,
-                filename: None,
-                path: None,
-                hashes: Vec::new(),
-            },
-            levels: vec![],
+            levels: vec![macro_sig, meso_sig], // Store signatures directly in levels
         };
         let signature = Arc::new(Mutex::new(initial_signature));
 
@@ -365,6 +336,48 @@ impl FastqProcessor {
         Ok(results)
     }
 
+    fn process_sequence(&self, seq: &[u8]) -> Result<Vec<u8>, ProcessingError> {
+        // 1. Validate sequence length
+        if seq.len() < self.qc_params.min_length {
+            return Ok(Vec::new()); // Sequence too shortself.apply_quality_control(seq, qual).is_some()
+        }
+
+        // 2. Check for invalid bases and count N's
+        let mut n_count = 0;
+        for &base in seq {
+            if !matches!(
+                base,
+                b'A' | b'C' | b'G' | b'T' | b'N' | b'a' | b'c' | b'g' | b't' | b'n'
+            ) {
+                return Ok(Vec::new()); // Invalid base found
+            }
+            if base == b'N' || base == b'n' {
+                n_count += 1;
+            }
+        }
+
+        // 3. Check N percentage
+        let n_percent = (n_count as f64 * 100.0) / seq.len() as f64;
+        if n_percent > self.qc_params.max_n_percent {
+            return Ok(Vec::new()); // Too many N's
+        }
+
+        // 4. Create processed sequence (uppercase)
+        let processed: Vec<u8> = seq
+            .iter()
+            .map(|&b| match b {
+                b'a' => b'A',
+                b'c' => b'C',
+                b'g' => b'G',
+                b't' => b'T',
+                b'n' => b'N',
+                _ => b,
+            })
+            .collect();
+
+        Ok(processed)
+    }
+
     /// Process a chunk of reads in parallel: apply QC and update the shared signature.
     fn process_chunk(
         &self,
@@ -372,52 +385,31 @@ impl FastqProcessor {
         metrics: &Arc<Mutex<ProcessingMetrics>>,
         signature: &Arc<Mutex<MultiResolutionSignature>>,
     ) -> Result<(), ProcessingError> {
-        chunk
-            .par_iter()
-            .try_for_each(|(seq, qual)| -> Result<(), ProcessingError> {
-                let original_len = seq.len();
-                let processed_seq_opt = self.apply_quality_control(seq, qual.as_ref());
-
+        chunk.par_iter().try_for_each(|(seq, _quality)| {
+            let processed_seq = self.process_sequence(seq)?;
+            if !processed_seq.is_empty() {
+                // Update metrics
                 {
-                    let mut metrics_guard = metrics.lock().unwrap();
-                    metrics_guard.total_reads += 1;
-                    metrics_guard.total_bases += original_len;
-                    if let Some(ref processed) = processed_seq_opt {
-                        metrics_guard.passed_reads += 1;
-                        metrics_guard.passed_bases += processed.len();
-                    }
+                    let mut metrics = metrics.lock().unwrap();
+                    metrics.total_reads += 1;
+                    metrics.total_bases += processed_seq.len();
+                    metrics.passed_reads += 1;
+                    metrics.passed_bases += processed_seq.len();
                 }
 
-                if let Some(processed_seq) = processed_seq_opt {
-                    if !processed_seq.is_empty() {
-                        let mut sig_guard = signature.lock().unwrap();
-                        // Fix 18, 19: Assume macro/meso_signature fields are KmerSignature structs
-                        // and call the appropriate method (e.g., add_sequence or add_kmers).
-                        // Requires checking the KmerSignature definition in sketch/signature.rs.
-                        // Let's assume `add_sequence` exists on KmerSignature based on previous attempts.
-                        sig_guard
-                            .macro_signature
-                            .add_sequence(&processed_seq)
-                            .map_err(|e| {
-                                ProcessingError::SignatureError(format!(
-                                    "Macro sig update failed: {}",
-                                    e
-                                ))
-                            })?;
-                        sig_guard
-                            .meso_signature
-                            .add_sequence(&processed_seq)
-                            .map_err(|e| {
-                                ProcessingError::SignatureError(format!(
-                                    "Meso sig update failed: {}",
-                                    e
-                                ))
-                            })?;
-                        // Do not update micro_signature here
-                    }
+                // Update signature at each resolution level
+                let mut sig_guard = signature.lock().unwrap();
+                for level in &mut sig_guard.levels {
+                    level.add_sequence(&processed_seq).map_err(|e| {
+                        ProcessingError::SignatureError(format!(
+                            "Failed to update signature at k={}: {}",
+                            level.kmer_size, e
+                        ))
+                    })?;
                 }
-                Ok(())
-            })
+            }
+            Ok(())
+        })
     }
 
     /// Apply quality control filters to a single read.
@@ -554,9 +546,9 @@ impl FastqProcessor {
 
         for strain_sig in relevant_strains {
             let sim = signature.similarity(strain_sig, None); // Use overall similarity
-            if sim > 0.0 {
-                similarities.insert(strain_sig.taxon_id.clone(), sim);
-                total_similarity += sim;
+            if sim > Some(0.0) {
+                similarities.insert(strain_sig.taxon_id.clone(), sim.unwrap_or(0.0));
+                total_similarity += sim.unwrap_or(0.0);
             }
         }
 

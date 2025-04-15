@@ -34,7 +34,7 @@ impl MidasData {
     }
 
     /// Retrieves information about a specific species.
-    pub fn get_species_info(&self, species_id: &str) -> Option {
+    pub fn get_species_info<T>(&self, species_id: &str) -> Option<T> {
         // TODO: Implement lookup for species data within the loaded MIDAS info.
         println!(
             "Warning: MidasData::get_species_info is not implemented for {}",
@@ -44,7 +44,7 @@ impl MidasData {
     }
 
     /// Retrieves gene annotations or other relevant data.
-    pub fn get_gene_annotations(&self, gene_id: &str) -> Option {
+    pub fn get_gene_annotations<T>(&self, gene_id: &str) -> Option<T> {
         // TODO: Implement lookup for gene data.
         println!(
             "Warning: MidasData::get_gene_annotations is not implemented for {}",
