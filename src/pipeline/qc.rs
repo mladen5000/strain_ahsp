@@ -2,7 +2,8 @@ use crate::adaptive::classifier::{AdaptiveClassifier, Classification, TaxonomicL
 use crate::database::DatabaseManager;
 // Fix: Ensure correct signature types are imported and used consistently
 // Assuming KmerSignature is the intended type for macro/meso signatures
-use crate::sketch::signature::{KmerSignature, MultiResolutionSignature}; // Removed ResolutionLevel
+use crate::sketch::signature::{KmerSignature, Signature}; // Removed ResolutionLevel
+use crate::sketch::MultiResolutionSignature;
 use log::{error, info, warn};
 // Fix: Import needletail parser
 use needletail::parse_fastx_file;
@@ -158,7 +159,8 @@ impl FastqProcessor {
             Vec::with_capacity(db_references.len());
         for db_sig_arc in db_references {
             // Check if essential signatures exist in the DB record
-            if db_sig_arc.macro_signature.is_none() || db_sig_arc.meso_signature.is_none() {
+            if db_sig_arc.macro_signature.name.is_none() || db_sig_arc.meso_signature.name.is_none()
+            {
                 warn!("Skipping reference signature {} due to missing macro or meso signature in DB data.", db_sig_arc.taxon_id);
                 continue;
             }
@@ -167,18 +169,15 @@ impl FastqProcessor {
             // Assumes the fields in db_sig_arc are compatible or directly usable KmerSignatures/Option<VariantProfile> etc.
             // Also assumes the struct definition in sketch::signature matches this.
             let sketch_sig = MultiResolutionSignature {
+                levels: db_sig_arc.levels.clone(), // Assuming levels is a field in the DB type
                 taxon_id: db_sig_arc.taxon_id.clone(),
                 lineage: db_sig_arc.lineage.clone(),
                 // Clone the KmerSignatures from the DB Arc<SomeDbType>
                 // This assumes db_sig_arc.macro_signature is Option<KmerSignature> or KmerSignature
-                macro_signature: db_sig_arc.macro_signature.clone().unwrap(), // Unwrap because we checked for None
-                meso_signature: db_sig_arc.meso_signature.clone().unwrap(), // Unwrap because we checked for None
+                macro_signature: db_sig_arc.macro_signature.clone(), // Unwrap because we checked for None
+                meso_signature: db_sig_arc.meso_signature.clone(), // Unwrap because we checked for None
                 // Clone micro signature if present in DB type, else None
                 micro_signature: db_sig_arc.micro_signature.clone(),
-                // Initialize weights - they can be calculated later if needed
-                weights: HashMap::new(), // Field name depends on actual struct definition
-                                         // OR maybe initialize 'levels' if that's the field name now?
-                                         // levels: vec![], // If the field is `levels: Vec<SomeType>`
             };
             sketch_signatures.push(Arc::new(sketch_sig));
         }
@@ -194,10 +193,16 @@ impl FastqProcessor {
             "Creating adaptive classifier with {} processed signatures...",
             sketch_signatures.len()
         );
-        // Pass the correctly typed Vec<Arc<MultiResolutionSignature>>
-        let classifier = AdaptiveClassifier::new(sketch_signatures, None, None).map_err(|e| {
-            ProcessingError::ClassificationError(format!("Classifier creation failed: {}", e))
-        })?;
+
+        let sketch_signatures_owned: Vec<MultiResolutionSignature> = sketch_signatures
+            .iter()
+            .map(|sig| (**sig).clone())
+            .collect();
+
+        let classifier =
+            AdaptiveClassifier::new(sketch_signatures_owned, None, None).map_err(|e| {
+                ProcessingError::ClassificationError(format!("Classifier creation failed: {}", e))
+            })?;
         info!("Classifier initialized successfully.");
 
         self.classifier = Some(classifier);
@@ -231,36 +236,41 @@ impl FastqProcessor {
             processing_time_seconds: 0.0,
         }));
 
-        // Fix 2, 3: Initialize KmerSignature using struct literal if ::new doesn't exist
-        let macro_sig = KmerSignature {
-            k: self.macro_k,
-            sketch_size: self.sketch_size,
-            sketch: Vec::new(), // Initialize with empty sketch
-            total_kmers_processed: 0,
-            kmers: todo!(),
-            counts: todo!(),
-            total_kmers: todo!(), // Use correct field name if different
+        // Fix: Initialize Signature struct instead of KmerSignature for macro_signature
+        let macro_sig = Signature {
+            algorithm: "Macro".to_string(),
+            name: None,
+            kmer_size: self.macro_k,
+            num_hashes: 0,
+            filename: None,
+            path: None,
+            hashes: Vec::new(),
         };
-        let meso_sig = KmerSignature {
-            k: self.meso_k,
-            sketch_size: self.sketch_size,
-            sketch: Vec::new(),
-            total_kmers_processed: 0,
-            kmers: todo!(),
-            counts: todo!(),
-            total_kmers: todo!(),
+        let meso_sig = Signature {
+            algorithm: "Meso".to_string(),
+            name: None,
+            kmer_size: self.meso_k,
+            num_hashes: 0,
+            filename: None,
+            path: None,
+            hashes: Vec::new(),
         };
 
-        // Fix 4, 5: Initialize MultiResolutionSignature using struct literal, ensure fields match definition
         let initial_signature = MultiResolutionSignature {
             taxon_id: sample_id.to_string(),
             lineage: Vec::new(),
             macro_signature: macro_sig,
             meso_signature: meso_sig,
-            micro_signature: None, // Assuming Option field based on prior context and Error 10
-            weights: HashMap::new(), // Assuming 'weights' field exists, removed based on Error 11
-                                   // OR:
-                                   // levels: vec![], // Use 'levels' field if 'weights' doesn't exist (based on Error 11)
+            micro_signature: Signature {
+                algorithm: "Micro".to_string(),
+                name: None,
+                kmer_size: self.meso_k,
+                num_hashes: 0,
+                filename: None,
+                path: None,
+                hashes: Vec::new(),
+            },
+            levels: vec![],
         };
         let signature = Arc::new(Mutex::new(initial_signature));
 
@@ -274,16 +284,14 @@ impl FastqProcessor {
             let record = record_result?; // Use '?'
             current_chunk.push((record.seq().to_vec(), record.qual().map(|q| q.to_vec())));
 
-            // Fix 6-17: Remove syntax errors, use correct variable name
             if current_chunk.len() >= self.chunk_size {
-                self.process_chunk(t_chunk, &metrics, &signature)?; // Use current_chunk
+                self.process_chunk(&current_chunk, &metrics, &signature)?;
                 current_chunk.clear();
             }
         }
 
-        // Fix 6-17: Use correct variable name
         if !current_chunk.is_empty() {
-            self.process_chunk(t_chunk, &metrics, &signature)?; // Use current_chunk
+            self.process_chunk(&current_chunk, &metrics, &signature)?;
         }
 
         let elapsed = start_time.elapsed().as_secs_f64();

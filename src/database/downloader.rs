@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 // Assuming the dummy definitions above are in src/sketch/signature.rs
 use crate::pipeline::qc;
 use crate::sketch::signature::MultiResolutionSignature; // Add MultiResolutionSignature from qc
+use crate::sketch::SignatureBuilder;
 use bincode::config::standard;
 use bincode::{decode_from_slice, encode_to_vec};
 use log::{error, info, warn};
@@ -840,7 +841,7 @@ impl DatabaseManager {
         Ok(DatabaseManager {
             database,
             downloader,
-            builder: builder.unwrap(), // Changed from builder.unwrap() to builder
+            builder: builder.unwrap(),
         })
     }
 
@@ -932,7 +933,7 @@ impl DatabaseManager {
         // Build signatures in batch
         // This can be computationally intensive
         info!("Starting signature batch build...");
-        let signatures = self.builder.build_batch(&files_for_builder).map_err(|e| {
+        let signatures = self.builder.build_batch(files_for_builder).map_err(|e| {
             DatabaseError::SignatureError(format!("Signature building failed: {}", e))
         })?;
         info!("Successfully built {} signatures.", signatures.len());
@@ -986,7 +987,8 @@ impl DatabaseManager {
 #[cfg(test)]
 mod tests {
     // Important: Include the dummy or real signature module
-    use crate::pipeline::qc::{MultiResolutionSignature, SignatureBuilder};
+    use crate::sketch::signature::MultiResolutionSignature;
+    use crate::sketch::SignatureBuilder;
 
     use super::*;
     use mockito::{Matcher, ServerGuard}; // Import ServerGuard

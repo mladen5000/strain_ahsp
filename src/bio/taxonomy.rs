@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::default::Default;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub enum TaxonomicLevel {
@@ -78,6 +79,15 @@ pub struct TaxonomicLineage {
     levels: HashMap<TaxonomicLevel, String>,
     // Optional taxonomic ID (e.g., NCBI taxon ID)
     tax_id: Option<String>,
+}
+
+impl Default for TaxonomicLineage {
+    fn default() -> Self {
+        Self {
+            levels: HashMap::new(),
+            tax_id: None,
+        }
+    }
 }
 
 impl TaxonomicLineage {

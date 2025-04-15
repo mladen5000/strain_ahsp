@@ -48,6 +48,7 @@ pub fn normalize(table: &mut CountTable, method: &str) -> Result<()> {
 fn normalize_median_of_ratios(table: &mut CountTable) -> Result<()> {
     let counts = table.counts_matrix();
     let (n_features, n_samples) = counts.dim();
+    let sample_names = table.sample_names().to_vec(); // Store sample names upfront
 
     if n_features == 0 || n_samples == 0 {
         warn!("Count table is empty, skipping median-of-ratios normalization.");
@@ -68,14 +69,17 @@ fn normalize_median_of_ratios(table: &mut CountTable) -> Result<()> {
         }
     }
 
-    let pseudo_reference = log_counts_sum.mapv(|sum| {
-        // Avoid division by zero if a feature has zero counts everywhere
-        if non_zero_counts[sum] > 0.0 {
-            (sum / non_zero_counts[sum]).exp()
-        } else {
-            0.0 // Or handle as appropriate, e.g., skip this feature
-        }
-    });
+    let pseudo_reference = log_counts_sum
+        .iter()
+        .zip(non_zero_counts.iter())
+        .map(|(&sum, &count)| {
+            if count > 0.0 {
+                (sum / count).exp()
+            } else {
+                0.0
+            }
+        })
+        .collect::<Array1<f64>>();
 
     // Calculate size factors for each sample
     let mut size_factors = Array1::<f64>::zeros(n_samples);
@@ -91,14 +95,14 @@ fn normalize_median_of_ratios(table: &mut CountTable) -> Result<()> {
         }
 
         if ratios.is_empty() {
-            warn!("Sample {} has no features with positive counts common with the pseudo-reference. Setting size factor to 1.0.", table.sample_names()[c]);
+            warn!("Sample {} has no features with positive counts common with the pseudo-reference. Setting size factor to 1.0.", sample_names[c]);
             size_factors[c] = 1.0; // Or handle as error? Or use total count?
         } else {
             // Calculate median of ratios
             let mut data = Data::new(ratios);
             size_factors[c] = data.median();
             if size_factors[c] <= 0.0 || !size_factors[c].is_finite() {
-                warn!("Calculated non-positive or non-finite size factor ({}) for sample {}. Setting to 1.0.", size_factors[c], table.sample_names()[c]);
+                warn!("Calculated non-positive or non-finite size factor ({}) for sample {}. Setting to 1.0.", size_factors[c], sample_names[c]);
                 size_factors[c] = 1.0; // Fallback if median is zero or invalid
             }
         }
@@ -115,8 +119,7 @@ fn normalize_median_of_ratios(table: &mut CountTable) -> Result<()> {
         } else {
             warn!(
                 "Skipping normalization for sample {} due to invalid size factor {}.",
-                table.sample_names()[c],
-                sf
+                sample_names[c], sf
             );
         }
     }
@@ -193,11 +196,11 @@ mod tests {
             [0.0, 40.0, 60.0],  // Feature 3 (zero in sample 1)
             [2.0, 4.0, 6.0],    // Feature 4
         ]);
-        let feature_names = vec!["F1", "F2", "F3", "F4"]
+        let feature_names: Vec<String> = vec!["F1", "F2", "F3", "F4"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let sample_names = vec!["S1", "S2", "S3"]
+        let sample_names: Vec<String> = vec!["S1", "S2", "S3"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -238,7 +241,13 @@ mod tests {
             }
         }
 
-        assert_relative_eq!(table.counts_matrix(), &expected_cpm, epsilon = 1e-6);
+        // Compare arrays element-wise
+        let actual = table.counts_matrix();
+        for i in 0..actual.nrows() {
+            for j in 0..actual.ncols() {
+                assert_relative_eq!(actual[[i, j]], expected_cpm[[i, j]], epsilon = 1e-6);
+            }
+        }
     }
 
     #[test]
@@ -277,8 +286,13 @@ mod tests {
         println!("Normalized Table:\n{:?}", table.counts_matrix());
         println!("Expected Table:\n{:?}", expected);
 
-        // Use relative comparison due to floating point math
-        assert_relative_eq!(table.counts_matrix(), &expected, epsilon = 1e-2); // Relaxed epsilon
+        // Compare arrays element-wise
+        let actual = table.counts_matrix();
+        for i in 0..actual.nrows() {
+            for j in 0..actual.ncols() {
+                assert_relative_eq!(actual[[i, j]], expected[[i, j]], epsilon = 1e-2);
+            }
+        }
     }
 
     #[test]
