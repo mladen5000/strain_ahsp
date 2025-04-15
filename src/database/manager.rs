@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::database::DatabaseManager;
-use log::{error, info, warn}; // Added log imports
+use log::{info, warn}; // Added log imports
 
 #[derive(Parser, Debug)] // Added Debug
 #[command(author, version, about, long_about = None)]

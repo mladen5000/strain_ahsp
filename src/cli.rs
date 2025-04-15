@@ -1,96 +1,171 @@
-use crate::adaptive::classifier::AdaptiveClassifier;
-use crate::database::DatabaseManager;r};
-use crate::pipeline::report::Cli as ReportCli; // Changed this line
+use log::info;
+
+use crate::pipeline::qc::{generate_report, ClassificationResults, QualityControlParams};
+use crate::pipeline::report::{Cli as ReportCli, Commands as ReportCommands};
+use crate::pipeline::FastqProcessor;
+// Import Commands from report
 use crate::visualization::{VisualizationType, Visualizer};
-use clap::{Parser, Subcommand};
 use std::fs::File;
 use std::path::PathBuf;
 
-#[derive(Subcommand)]
-pub enum Commands {
-    // ... existing commands ...
-    /// Generate visualizations for processed results
-    Visualize {
-        /// Path to the results JSON file
-        #[arg(short, long)]
-        results: PathBuf,
-
-        /// Path to the output directory
-        #[arg(short, long, default_value = "visualizations")]
-        output: PathBuf,
-    },
-
-    /// Compare multiple samples
-    CompareSamples {
-        /// Paths to multiple results JSON files
-        #[arg(short, long)]
-        results: Vec<PathBuf>,
-
-        /// Path to the output directory
-        #[arg(short, long, default_value = "comparisons")]
-        output: PathBuf,
-    },
-}
-
 /// Main entry point for CLI
 pub fn run_cli(cli: ReportCli) -> Result<(), Box<dyn std::error::Error>> {
-    // Updated parameter type
-    // ... existing CLI handling ...
-
     match cli.command {
-        // ... existing command handlers ...
-        Commands::Visualize { results, output } => {
-            // Load results from file
-            let file = File::open(&results)?;
+        ReportCommands::Visualize {
+            output,
+            fastq,
+            sample_id,
+            min_quality,
+            min_length,
+        } => {
+            let file = File::open(&fastq)?;
             let results_data: ClassificationResults = serde_json::from_reader(file)?;
-
-            // Create visualizer
             let visualizer = Visualizer::new(&output)?;
-
-            // Generate visualizations
             println!(
                 "Generating visualizations for sample: {}",
                 results_data.sample_id
             );
-
-            // Generate individual visualizations
             let taxonomy_chart = visualizer
                 .generate_visualization(&results_data, VisualizationType::TaxonomySunburst)?;
             println!("Generated taxonomy chart: {}", taxonomy_chart.display());
-
             let strain_chart = visualizer
                 .generate_visualization(&results_data, VisualizationType::StrainBarChart)?;
             println!("Generated strain chart: {}", strain_chart.display());
-
             let confidence_chart = visualizer
                 .generate_visualization(&results_data, VisualizationType::ConfidenceHeatmap)?;
             println!("Generated confidence chart: {}", confidence_chart.display());
-
-            // Generate comprehensive HTML report
             let html_report = visualizer.generate_html_report(&results_data)?;
             println!("Generated HTML report: {}", html_report.display());
             println!("Open this file in a web browser to view the interactive report");
+            Ok(())
         }
+        ReportCommands::ProcessFastq {
+            fastq,
+            sample_id,
+            output,
+            min_quality,
+            min_length,
+        } => todo!(),
+        ReportCommands::ProcessDir { dir, output } => todo!(),
+        ReportCommands::CompareSamples {
+            fastq,
+            sample_id,
+            output,
+            min_quality,
+            min_length,
+        } => todo!(),
+        ReportCommands::GenerateSummaryReport { output } => {
+            let blah = 1;
+            let results = todo!();
+            let report = generate_report(&results)?;
+            println!("{}", report);
+            Ok(())
+        }
+        ReportCommands::ProcessFastq {
+            fastq,
+            sample_id,
+            output,
+            min_quality,
+            min_length,
+        } => {
+            let blah = 1;
 
-        Commands::CompareSamples { results, output } => {
-            // Load all result files
-            let mut results_data = Vec::new();
+            let file = File::open(&fastq)?;
+            let results_data: ClassificationResults = serde_json::from_reader(file)?;
+            println!(
+                "Processing FASTQ file: {} with Sample ID: {}",
+                fastq.display(),
+                sample_id
+            );
 
-            for path in &results {
-                let file = File::open(path)?;
-                let result: ClassificationResults = serde_json::from_reader(file)?;
-                results_data.push(result);
-            }
+            let qc_params = QualityControlParams {
+                min_avg_quality: min_quality,
+                min_length,
+                trim_quality: 15,
+                max_n_percent: 5.0,
+            };
+            info!("QC Parameters: {:?}", qc_params);
 
-            // Create visualizer
-            let visualizer = Visualizer::new(&output)?;
+            let mut processor = FastqProcessor::new(
+                &cli.db_path,
+                &cli.cache_dir,
+                cli.threads,
+                31,
+                21,
+                1000,
+                Some(qc_params),
+                cli.api_key.clone(), // Clone Option<String> if needed
+            )?;
+            info!("FastqProcessor created.");
 
-            // Generate comparison visualization
-            println!("Comparing {} samples", results_data.len());
-            let comparison = visualizer.compare_samples(&results_data)?;
-            println!("Generated comparison: {}", comparison.display());
+            processor.init_classifier()?;
+            info!("Classifier initialized.");
+
+            let results = processor.process_file(&fastq, &sample_id, &output)?;
+            info!("File processing complete. Results: {:?}", results);
+
+            println!("Processing finished. Results summary struct: {:?}", results);
+
+            let report = generate_report(&results)?;
+            println!("{}", report);
+            Ok(())
+        }
+        ReportCommands::ProcessDir { dir, output } => {
+            let blah = 1;
+
+            let fastq_files: Vec<PathBuf> = std::fs::read_dir(&dir)?
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    let path = entry.path();
+                    path.is_file()
+                        && (path.extension().map_or(false, |ext| {
+                            let lower_ext = ext.to_string_lossy().to_lowercase();
+                            lower_ext == "fastq" || lower_ext == "fq"
+                        }))
+                })
+                .map(|entry| entry.path())
+                .collect();
+
+            for fastq in fastq_files {}
+            todo!();
+        }
+        ReportCommands::CompareSamples {
+            fastq,
+            sample_id,
+            output,
+            min_quality,
+            min_length,
+        } => {
+            let blah = 1;
+
+            let file = File::open(&fastq)?;
+            let results_data: ClassificationResults = serde_json::from_reader(file)?;
+
+            println!("Comparing samples for Sample ID: {}", sample_id);
+
+            let comparison_results = todo!();
+
+            println!("Comparison results: {:?}", comparison_results);
+            Ok(())
+        }
+        ReportCommands::GenerateSummaryReport { output } => {
+            let blah = 1;
+
+            let results = todo!();
+            let report = generate_report(&results)?;
+            println!("{}", report);
+            Ok(())
+        }
+        ReportCommands::ProcessFastq {
+            fastq,
+            sample_id,
+            output,
+            min_quality,
+            min_length,
+        } => {
+            let blah = 1;
+
+            Ok(())
         }
     }
-
-    Ok(())
 }

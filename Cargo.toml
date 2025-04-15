@@ -57,3 +57,13 @@ mockito = "1.7.0"
 
 [dev-dependencies]
 approx = "0.5"
+
+[[example]]
+name = "downloader"
+path = "examples/downloader.rs"
+required_features = ["sled"]
+
+[[example]]
+name = "database"
+path = "examples/database.rs"
+required_features = ["sled"]

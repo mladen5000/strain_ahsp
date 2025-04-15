@@ -56,7 +56,6 @@ pub enum Commands {
         #[arg(long, default_value_t = 50)]
         min_length: usize,
     },
-
     /// Process multiple FASTQ files in a directory
     ProcessDir {
         /// Path to the directory containing FASTQ files
@@ -64,6 +63,54 @@ pub enum Commands {
         dir: PathBuf,
 
         /// Path to the output directory
+        #[arg(short, long, default_value = "results", value_name = "DIR")]
+        output: PathBuf,
+    },
+    /// Visualization stuff
+    Visualize {
+        /// Path to the FASTQ file
+        #[arg(short, long, value_name = "FILE", required = true)]
+        fastq: PathBuf,
+
+        /// Sample ID
+        #[arg(short, long, required = true)]
+        sample_id: String,
+
+        /// Path to the output directory
+        #[arg(short, long, default_value = "results", value_name = "DIR")]
+        output: PathBuf,
+
+        /// Minimum average quality score for reads
+        #[arg(long, default_value_t = 20.0)]
+        min_quality: f64,
+
+        /// Minimum read length after trimming
+        #[arg(long, default_value_t = 50)]
+        min_length: usize,
+    },
+    /// Multiple samples
+    CompareSamples {
+        /// Path to the FASTQ file
+        #[arg(short, long, value_name = "FILE", required = true)]
+        fastq: PathBuf,
+
+        /// Sample ID
+        #[arg(short, long, required = true)]
+        sample_id: String,
+
+        /// Path to the output directory
+        #[arg(short, long, default_value = "results", value_name = "DIR")]
+        output: PathBuf,
+
+        /// Minimum average quality score for reads
+        #[arg(long, default_value_t = 20.0)]
+        min_quality: f64,
+
+        /// Minimum read length after trimming
+        #[arg(long, default_value_t = 50)]
+        min_length: usize,
+    },
+    GenerateSummaryReport {
         #[arg(short, long, default_value = "results", value_name = "DIR")]
         output: PathBuf,
     },
@@ -127,7 +174,6 @@ pub fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("Processing finished. Results summary struct: {:?}", results);
             // Placeholder report
         }
-
         Commands::ProcessDir { dir, output } => {
             info!(
                 "Processing directory: {} into output: {}",
@@ -242,6 +288,96 @@ pub fn run_cli(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             println!("Finished processing {} FASTQ files.", fastq_files.len());
+        }
+        Commands::Visualize {
+            fastq,
+            sample_id,
+            output,
+            min_quality,
+            min_length,
+        } => {
+            info!("Generating visualizations for sample: {}", sample_id);
+
+            let qc_params = QualityControlParams {
+                min_avg_quality: min_quality,
+                min_length,
+                trim_quality: 15,
+                max_n_percent: 5.0,
+            };
+
+            let mut processor = FastqProcessor::new(
+                &cli.db_path,
+                &cli.cache_dir,
+                cli.threads,
+                31,
+                21,
+                1000,
+                Some(qc_params),
+                cli.api_key.clone(),
+            )?;
+
+            // Initialize and process
+            processor.init_classifier()?;
+            let results = processor.process_file(&fastq, &sample_id, &output)?;
+
+            // Generate visualizations
+            processor.generate_quality_plots(&results, &output)?;
+            processor.generate_taxonomy_plots(&results, &output)?;
+
+            println!("Visualizations generated in: {}", output.display());
+        }
+        Commands::CompareSamples {
+            fastq,
+            sample_id,
+            output,
+            min_quality,
+            min_length,
+        } => {
+            info!("Comparing sample {} with existing samples", sample_id);
+            let qc_params = QualityControlParams {
+                min_avg_quality: min_quality,
+                min_length,
+                trim_quality: 15,
+                max_n_percent: 5.0,
+            };
+            let mut processor = FastqProcessor::new(
+                &cli.db_path,
+                &cli.cache_dir,
+                cli.threads,
+                31,
+                21,
+                1000,
+                Some(qc_params),
+                cli.api_key.clone(),
+            )?;
+            processor.init_classifier()?;
+            let new_results = processor.process_file(&fastq, &sample_id, &output)?;
+            let comparison_results = processor.process_file(&fastq, &sample_id, &output)?;
+            println!(
+                "Sample comparison complete. Results in: {}",
+                output.display()
+            );
+        }
+        Commands::GenerateSummaryReport { output } => {
+            info!("Generating summary report in: {}", output.display());
+
+            // Find all result files in the output directory
+            let result_files: Vec<PathBuf> = std::fs::read_dir(&output)?
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map_or(false, |ext| ext == "json")
+                })
+                .map(|entry| entry.path())
+                .collect();
+
+            if result_files.is_empty() {
+                println!("No result files found in: {}", output.display());
+                return Ok(());
+            }
         }
     }
 

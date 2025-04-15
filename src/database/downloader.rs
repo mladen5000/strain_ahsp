@@ -1,11 +1,9 @@
 use std::collections::{HashMap, HashSet}; // Added HashSet
 use std::fs::{self, File};
-use std::io::{self, BufReader, Write}; // Added BufReader
+use std::io::{self, Write}; // Added BufReader
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-// Assuming the dummy definitions above are in src/sketch/signature.rs
-use crate::pipeline::qc;
 use crate::sketch::signature::MultiResolutionSignature; // Add MultiResolutionSignature from qc
 use crate::sketch::SignatureBuilder;
 use bincode::config::standard;
@@ -627,7 +625,10 @@ impl SignatureDatabase {
     }
 
     /// Validate a signature's levels and compatibility
-    fn validate_signature(&self, signature: &MultiResolutionSignature) -> Result<(), DatabaseError> {
+    fn validate_signature(
+        &self,
+        signature: &MultiResolutionSignature,
+    ) -> Result<(), DatabaseError> {
         // Ensure signature has at least one level
         if signature.levels.is_empty() {
             return Err(DatabaseError::InvalidSignature(
@@ -647,8 +648,9 @@ impl SignatureDatabase {
         // Verify each level has valid parameters
         for level in &signature.levels {
             // Either num_hashes or scaled must be set, but not both
-            if (level.sketch.num_hashes == 0 && level.sketch.scaled == 0) 
-                || (level.sketch.num_hashes > 0 && level.sketch.scaled > 0) {
+            if (level.sketch.num_hashes == 0 && level.sketch.scaled == 0)
+                || (level.sketch.num_hashes > 0 && level.sketch.scaled > 0)
+            {
                 return Err(DatabaseError::InvalidSignature(
                     "Each level must specify either num_hashes or scaled, but not both".to_string(),
                 ));
@@ -656,9 +658,10 @@ impl SignatureDatabase {
 
             // Verify k-mer size is reasonable
             if level.kmer_size == 0 || level.kmer_size > 63 {
-                return Err(DatabaseError::InvalidSignature(
-                    format!("Invalid k-mer size: {}", level.kmer_size),
-                ));
+                return Err(DatabaseError::InvalidSignature(format!(
+                    "Invalid k-mer size: {}",
+                    level.kmer_size
+                )));
             }
         }
 
@@ -667,7 +670,7 @@ impl SignatureDatabase {
 
     /// Add a signature to the database
     pub fn add_signature(
-        &mut self, 
+        &mut self,
         signature: &MultiResolutionSignature,
     ) -> Result<(), DatabaseError> {
         // Validate signature structure
@@ -1247,7 +1250,7 @@ mod mock_tests {
         let cache_dir = temp_dir.path().join("mock_cache");
         fs::create_dir_all(&cache_dir).unwrap();
 
-        let downloader = NCBIDownloader {
+        let downloader: NCBIDownloader = NCBIDownloader {
             client: Client::new(),
             base_url: server.url(),
             api_key: None,
